@@ -63,6 +63,9 @@ class LLMSettings(BaseSettings):
     # 与 Anthropic 原生 API 的短横线写法（`claude-haiku-4-5`）不同，写错会 404。
     mini_agent_model: str = "anthropic/claude-haiku-4.5"
     generator_model: str = "anthropic/claude-sonnet-5"  # Generator Agent（docs/dev/06）出题模型
+    # Optimizer Agent（docs/dev/09）写补丁的模型。补丁会进人工审查、可能被合进
+    # 真实仓库，质量优先，因此默认与 judge_model 同档而不是走廉价的 mini 档。
+    optimizer_model: str = "anthropic/claude-sonnet-5"
     # OpenRouter 的 Key（`sk-or-v1-...`）。同时接受裸 `OPENROUTER_API_KEY`，方便与
     # 其他工具共用同一个环境变量。
     api_key: SecretStr = Field(
@@ -86,6 +89,43 @@ class ExecutorSettings(BaseSettings):
     hermes_hook_secret: SecretStr = SecretStr("")
     sandbox_wall_clock_timeout_s: int = 60  # 模块五：单沙箱存活硬上限
     outbound_network_allowlist: list[str] = Field(default_factory=list)
+
+
+class JudgeSettings(BaseSettings):
+    """Judge Agent 的可信度机制参数（docs/dev/08）。
+
+    `consensus_strategy` 是 docs/dev/interfaces/06_llm_client_and_sampling.md 第 2 节
+    留给本文档的定稿项：新一代 Claude 模型已移除采样参数，"3 副本温度扰动"在默认
+    `judge_model` 上物理不成立。三个候选方案都做成了配置项而不是二选一写死——
+    换 `judge_model` 时不该被迫改代码：
+
+    - `perspective`（默认）：3 副本同模型同温度，但各自被指派一个不同的**审查
+      视角**（证据充分性 / 反例存在性 / 判定一致性）。语义上更接近"三个不同的
+      裁判"，而不是"同一个裁判掷三次骰子"，且不依赖任何采样能力。
+    - `temperature`：字面意义的温度扰动，只在仍支持采样的模型上有意义。
+    - `model`：跨模型共识，与 docs/dev/19 共享基础设施。
+    """
+
+    model_config = SettingsConfigDict(env_prefix="SKILLEVAL_JUDGE_")
+
+    golden_inject_rate: float = 0.02  # 架构文档"每 50 次真实评测混入 1 次"
+    miss_rate_threshold: float = 0.05  # 失误率超过 5% 触发告警并冻结
+    health_window_size: int = 50  # 失误率滑动窗口大小
+    consensus_strategy: str = "perspective"  # perspective | temperature | model
+    consensus_temperatures: list[float] = Field(default_factory=lambda: [0.1, 0.3, 0.5])
+    consensus_models: list[str] = Field(default_factory=list)  # 空表示回落到 judge_model
+    # 共识副本走 Mini Agent 通道（成本）还是 judge_model（能力）。默认 True：
+    # 复用 docs/dev/07 的模板体系本来就是 Mini Agent 的职责，Judge 只负责投票。
+    consensus_uses_mini_model: bool = True
+
+
+class OptimizerSettings(BaseSettings):
+    """Optimizer 闭环重试参数（docs/dev/09 第 5 节）。"""
+
+    model_config = SettingsConfigDict(env_prefix="SKILLEVAL_OPTIMIZER_")
+
+    max_retries: int = 3  # 达到后 suspend_and_wait，而不是判负
+    temperature: float = 0.2  # 补丁生成偏保守；模型不支持采样时该值不会被下发
 
 
 class LangfuseSettings(BaseSettings):
@@ -118,6 +158,8 @@ class Settings(BaseSettings):
     db: DatabaseSettings = Field(default_factory=DatabaseSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
     executor: ExecutorSettings = Field(default_factory=ExecutorSettings)
+    judge: JudgeSettings = Field(default_factory=JudgeSettings)
+    optimizer: OptimizerSettings = Field(default_factory=OptimizerSettings)
     langfuse: LangfuseSettings = Field(default_factory=LangfuseSettings)
     api: ApiSettings = Field(default_factory=ApiSettings)
 

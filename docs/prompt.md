@@ -11,8 +11,8 @@
 你是高级ai agent应用开发工程师，根据项目文档完成具体的代码编写
 其中C:\Users\Administrator\PycharmProjects\skill-evaluate\docs\_5_关键架构.md 架构设计总文档。
 C:\Users\Administrator\PycharmProjects\skill-evaluate\docs\dev 内的md文件为具体的开发文档。
-其中\docs\dev 中的文档0-5已经开发完毕
-请接着实现文档6-7
+其中\docs\dev 中的文档0-7已经开发完毕
+请接着实现文档8-9
 
 注意！  
 模块如果需要接入前序模块，应当检查C:\Users\Administrator\PycharmProjects\skill-evaluate\docs\dev\interfaces是否留有接入文档，如果存在以依照接入文档接入

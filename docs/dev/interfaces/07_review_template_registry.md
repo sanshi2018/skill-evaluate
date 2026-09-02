@@ -127,6 +127,23 @@ verdicts = await asyncio.gather(*(a.review(request) for a in agents))
   `docs/dev/interfaces/06_llm_client_and_sampling.md` 第 2 节，里面列了三个可选
   方案。
 
+### `08` 已落地（实际做法）
+
+`08` 定稿为**视角扰动**：三副本同模型同温度，差异来自各自的 system 后缀。为此
+`MiniReviewAgent` 追加了一个可选构造参数 `system_suffix`（默认 `None`，不影响
+任何既有调用）：
+
+```python
+MiniReviewAgent(system_suffix=f"{STEP_CITATION_RULE}\n\n复核视角：**反例存在性**……")
+```
+
+追加到 system 而不是塞进 `content`：`content` 变量是各模板自己的契约，往里塞一个
+只有部分模板会渲染的键，等于让扰动在另一部分模板上悄悄失效。
+
+因此 CRITICAL 场景要求的 `[step:N]` 引用约定**由 Judge 统一下发**，各模板
+（含 `15` 的严重性定级模板）**不需要**在自己的 `.jinja` 里重复写这条要求。
+详见 `docs/dev/interfaces/08_judge_rules_and_criticality.md` 第 2 节。
+
 ## 6. `MiniAgentBackend` 的 Stub 已被替换
 
 `docs/dev/interfaces/05_langfuse_hook_and_agent_base.md` 第 2 节的待接入项已完成：

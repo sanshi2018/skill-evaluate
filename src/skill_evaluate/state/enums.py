@@ -83,6 +83,31 @@ class SecurityFindingCategory(StrEnum):
     ARTIFACT_SAST = "artifact_sast"
 
 
+class Criticality(StrEnum):
+    """一次裁量判定的重要度（docs/dev/08 第 4.1 节）。
+
+    **由调用方（各评测维度节点）显式声明**，Judge Agent 不自己猜：不同维度对
+    "重大负面判决"的定义不同（模块五看安全等级、模块八看覆盖率阈值），全局规则
+    只会两头不讨好。与 `SeverityLevel` 正交——"要不要共识投票"和"判定结果多严重"
+    是两个维度，不要合并成一个字段（docs/dev/08 第 7 节）。
+    """
+
+    ROUTINE = "routine"  # 单副本快速通行，成本基线
+    CRITICAL = "critical"  # 触发 3 副本背靠背复核，3 倍 Token 成本
+
+
+class PatchType(StrEnum):
+    """Optimizer 产出的补丁类型（docs/dev/09 第 2 节）。
+
+    契约定义在 `state/patch.py` 的语境里，但按项目约定（本文件是全局枚举的唯一
+    落点）实体定义在这里，`state/patch.py` 原样再导出，两条 import 路径等价。
+    """
+
+    DESCRIPTION_PATCH = "description_patch"  # 重写 SKILL.md 的 description 字段（模块一）
+    RIGID_CONSTRAINT = "rigid_constraint"  # 在 SKILL.md 正文追加刚性安全约束（模块五 Prompt 加固）
+    CODE_PATCH = "code_patch"  # 修改 scripts/ 下代码（模块五代码防御）
+
+
 class HookWaitStatus(StrEnum):
     """外部事件唤醒机制中 `pending_hooks`/`human_approvals` 的等待状态（docs/dev/04 第 5 节）。"""
 

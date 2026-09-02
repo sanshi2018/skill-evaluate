@@ -251,3 +251,118 @@ class HumanApprovalORM(Base):
     resume_payload: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+# --------------------------------------------------------------------------- #
+# docs/dev/08：裁判可信度机制（黄金基准盲测 + 失误率冻结）
+# --------------------------------------------------------------------------- #
+
+
+class GoldenCaseORM(Base):
+    """人类专家预标定的黄金用例（docs/dev/08 第 3.1 节）。
+
+    本表**只被消费不被生产**：数据由运维/资深工程师通过审查工作台（docs/dev/22）
+    或直接写库补充。
+    """
+
+    __tablename__ = "golden_cases"
+
+    golden_id: Mapped[str] = mapped_column(String, primary_key=True)
+    template_key: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    content: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    human_labeled_status: Mapped[str] = mapped_column(String, nullable=False)
+    human_labeled_reasoning: Mapped[str] = mapped_column(String, nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class JudgeMissRecordORM(Base):
+    """每一次黄金用例判决的记账（命中与失误都记，见 `state/golden.py`）。"""
+
+    __tablename__ = "judge_miss_records"
+
+    miss_id: Mapped[str] = mapped_column(String, primary_key=True)
+    golden_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    judge_output_status: Mapped[str] = mapped_column(String, nullable=False)
+    model: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    temperature: Mapped[float] = mapped_column(Float, nullable=False)
+    # 冻结粒度是 (model, temperature_bucket)，因此分桶值直接落库而不是每次现算，
+    # 保证"当时按哪个桶统计的"可回溯（分桶规则将来变了也不会改写历史）。
+    temperature_bucket: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    is_miss: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class JudgeHealthStatusORM(Base):
+    """按 `(model, temperature_bucket)` 独立冻结/解冻的裁判健康状态（docs/dev/08 第 3.3 节）。"""
+
+    __tablename__ = "judge_health_status"
+    __table_args__ = (
+        UniqueConstraint("model", "temperature_bucket", name="uq_judge_health_config"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid_str)
+    model: Mapped[str] = mapped_column(String, nullable=False)
+    temperature_bucket: Mapped[str] = mapped_column(String, nullable=False)
+    frozen: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    miss_rate: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    window_size: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+# --------------------------------------------------------------------------- #
+# docs/dev/09：Optimizer 补丁与闭环重试
+# --------------------------------------------------------------------------- #
+
+
+class PatchORM(Base):
+    """候选补丁（docs/dev/09 第 2 节）。不是 git commit——转正式提交是 docs/dev/24 的事。"""
+
+    __tablename__ = "patches"
+
+    patch_id: Mapped[str] = mapped_column(String, primary_key=True)
+    skill_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    base_skill_version_ref: Mapped[str] = mapped_column(String, nullable=False)
+    patch_type: Mapped[str] = mapped_column(String, nullable=False)
+    target_path: Mapped[str] = mapped_column(String, nullable=False)
+    diff: Mapped[str] = mapped_column(String, nullable=False)
+    rationale: Mapped[str] = mapped_column(String, nullable=False)
+    triggered_by_finding_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class PatchApplicationResultORM(Base):
+    """一次补丁应用 + 回归的结果（docs/dev/09 第 2、5 节）。
+
+    同一个 patch 只会被应用一次（`OptimizationLoop` 不重试同一个 patch），故以
+    `patch_id` 为主键。
+    """
+
+    __tablename__ = "patch_application_results"
+
+    patch_id: Mapped[str] = mapped_column(String, primary_key=True)
+    applied: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    regression_passed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    working_skill_version_ref: Mapped[str | None] = mapped_column(String, nullable=True)
+    detail: Mapped[str] = mapped_column(String, default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class NodeRetryCountORM(Base):
+    """`PipelineState.retry_counts` 的落盘形态（docs/dev/09 第 5 节）。
+
+    为什么不直接改 checkpoint 里的 `PipelineState.retry_counts`：`OptimizationLoop`
+    的重试发生在**一个节点内部**的循环里，此时该节点的状态更新还没有被 LangGraph
+    合并回图状态；把计数写进一张独立小表，既能让循环中途崩溃后的重启看到真实的
+    已重试次数，也能让审批工作台（docs/dev/22）在节点挂起时直接查到"它试了几次"。
+    """
+
+    __tablename__ = "node_retry_counts"
+    __table_args__ = (UniqueConstraint("run_id", "node_name", name="uq_node_retry_counts_key"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid_str)
+    run_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    node_name: Mapped[str] = mapped_column(String, nullable=False)
+    retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

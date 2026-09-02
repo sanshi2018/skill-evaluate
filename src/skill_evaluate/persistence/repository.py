@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import TypedDict
 
-from sqlalchemy import select, update
+from sqlalchemy import desc, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from skill_evaluate.errors import PersistenceError
@@ -21,8 +21,14 @@ from skill_evaluate.persistence.models import (
     ConsensusResultORM,
     DimensionResultORM,
     ExecutionTraceORM,
+    GoldenCaseORM,
     HumanApprovalORM,
+    JudgeHealthStatusORM,
+    JudgeMissRecordORM,
     JudgeVerdictORM,
+    NodeRetryCountORM,
+    PatchApplicationResultORM,
+    PatchORM,
     PendingHookORM,
     RunORM,
     SecurityFindingORM,
@@ -32,7 +38,9 @@ from skill_evaluate.persistence.models import (
 )
 from skill_evaluate.state.assertion import AssertionResult, AssertionSpec
 from skill_evaluate.state.capability import CapabilityTree
+from skill_evaluate.state.golden import GoldenCase, JudgeMissRecord
 from skill_evaluate.state.judge import ConsensusResult, JudgeVerdict
+from skill_evaluate.state.patch import Patch, PatchApplicationResult
 from skill_evaluate.state.security import SecurityFinding
 from skill_evaluate.state.skill import SkillDefinition
 from skill_evaluate.state.test_case import TestCase, TestSuiteVersion
@@ -649,3 +657,277 @@ class DimensionResultRepository:
 
 def _raise_not_found(what: str, key: str) -> None:
     raise PersistenceError(f"{what} not found for key={key!r}")
+
+
+# --------------------------------------------------------------------------- #
+# docs/dev/08：裁判可信度机制
+# --------------------------------------------------------------------------- #
+
+
+class GoldenCaseRepository:
+    """黄金用例存取（docs/dev/08 第 3.1 节）。
+
+    `save()` 存在是为了让运维侧的补录脚本/审查工作台有一个受控入口——评测流水线
+    本身只读不写。
+    """
+
+    async def save(self, case: GoldenCase) -> None:
+        async with new_session() as session:
+            stmt = pg_insert(GoldenCaseORM).values(
+                golden_id=case.golden_id,
+                template_key=case.template_key,
+                content=case.content,
+                human_labeled_status=case.human_labeled_status.value,
+                human_labeled_reasoning=case.human_labeled_reasoning,
+                active=case.active,
+                created_at=datetime.now(UTC),
+            )
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["golden_id"],
+                set_={
+                    "content": stmt.excluded.content,
+                    "human_labeled_status": stmt.excluded.human_labeled_status,
+                    "human_labeled_reasoning": stmt.excluded.human_labeled_reasoning,
+                    "active": stmt.excluded.active,
+                },
+            )
+            await session.execute(stmt)
+            await session.commit()
+
+    async def list_active(self, template_key: str | None = None) -> list[GoldenCase]:
+        """按模板筛选可用黄金用例。
+
+        注入点只会拿**同一 template_key** 的黄金用例去替换真实请求：换了模板就
+        换了 content 的字段形状，渲染会直接因 `StrictUndefined` 报错，伪装也就
+        无从谈起。
+        """
+        async with new_session() as session:
+            query = select(GoldenCaseORM).where(GoldenCaseORM.active.is_(True))
+            if template_key is not None:
+                query = query.where(GoldenCaseORM.template_key == template_key)
+            rows = (await session.execute(query)).scalars()
+            return [
+                GoldenCase(
+                    golden_id=r.golden_id,
+                    template_key=r.template_key,
+                    content=r.content or {},
+                    human_labeled_status=r.human_labeled_status,
+                    human_labeled_reasoning=r.human_labeled_reasoning,
+                    active=r.active,
+                )
+                for r in rows
+            ]
+
+
+class JudgeMissRepository:
+    """黄金用例判决的记账与滑动窗口查询（docs/dev/08 第 3.3 节）。"""
+
+    async def record(self, record: JudgeMissRecord, *, temperature_bucket: str) -> None:
+        async with new_session() as session:
+            stmt = pg_insert(JudgeMissRecordORM).values(
+                miss_id=record.miss_id,
+                golden_id=record.golden_id,
+                judge_output_status=record.judge_output_status.value,
+                model=record.model,
+                temperature=record.temperature,
+                temperature_bucket=temperature_bucket,
+                is_miss=record.is_miss,
+                occurred_at=record.occurred_at,
+            )
+            stmt = stmt.on_conflict_do_nothing(index_elements=["miss_id"])
+            await session.execute(stmt)
+            await session.commit()
+
+    async def recent_window(
+        self, *, model: str, temperature_bucket: str, window_size: int
+    ) -> list[bool]:
+        """最近 `window_size` 次该 Judge 配置的黄金判决，返回 `is_miss` 序列（新 -> 旧）。"""
+        async with new_session() as session:
+            rows = (
+                await session.execute(
+                    select(JudgeMissRecordORM.is_miss)
+                    .where(
+                        JudgeMissRecordORM.model == model,
+                        JudgeMissRecordORM.temperature_bucket == temperature_bucket,
+                    )
+                    .order_by(desc(JudgeMissRecordORM.occurred_at))
+                    .limit(window_size)
+                )
+            ).scalars()
+            return list(rows)
+
+
+class JudgeHealthRepository:
+    """`judge_health_status` 表：按 `(model, temperature_bucket)` 独立冻结/解冻。"""
+
+    async def get(self, *, model: str, temperature_bucket: str) -> dict[str, object] | None:
+        async with new_session() as session:
+            row = (
+                await session.execute(
+                    select(JudgeHealthStatusORM).where(
+                        JudgeHealthStatusORM.model == model,
+                        JudgeHealthStatusORM.temperature_bucket == temperature_bucket,
+                    )
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                return None
+            return {
+                "model": row.model,
+                "temperature_bucket": row.temperature_bucket,
+                "frozen": row.frozen,
+                "miss_rate": row.miss_rate,
+                "window_size": row.window_size,
+                "reason": row.reason,
+            }
+
+    async def upsert(
+        self,
+        *,
+        model: str,
+        temperature_bucket: str,
+        frozen: bool,
+        miss_rate: float,
+        window_size: int,
+        reason: str | None,
+    ) -> None:
+        async with new_session() as session:
+            stmt = pg_insert(JudgeHealthStatusORM).values(
+                model=model,
+                temperature_bucket=temperature_bucket,
+                frozen=frozen,
+                miss_rate=miss_rate,
+                window_size=window_size,
+                reason=reason,
+                updated_at=datetime.now(UTC),
+            )
+            stmt = stmt.on_conflict_do_update(
+                constraint="uq_judge_health_config",
+                set_={
+                    "frozen": stmt.excluded.frozen,
+                    "miss_rate": stmt.excluded.miss_rate,
+                    "window_size": stmt.excluded.window_size,
+                    "reason": stmt.excluded.reason,
+                    "updated_at": stmt.excluded.updated_at,
+                },
+            )
+            await session.execute(stmt)
+            await session.commit()
+
+    async def is_frozen(self, *, model: str, temperature_bucket: str) -> bool:
+        status = await self.get(model=model, temperature_bucket=temperature_bucket)
+        return bool(status and status["frozen"])
+
+
+# --------------------------------------------------------------------------- #
+# docs/dev/09：Optimizer 补丁与重试计数
+# --------------------------------------------------------------------------- #
+
+
+class PatchRepository:
+    async def save(self, patch: Patch) -> None:
+        async with new_session() as session:
+            stmt = pg_insert(PatchORM).values(
+                patch_id=patch.patch_id,
+                skill_id=patch.skill_id,
+                base_skill_version_ref=patch.base_skill_version_ref,
+                patch_type=patch.patch_type.value,
+                target_path=patch.target_path,
+                diff=patch.diff,
+                rationale=patch.rationale,
+                triggered_by_finding_id=patch.triggered_by_finding_id,
+                created_at=patch.created_at,
+            )
+            stmt = stmt.on_conflict_do_nothing(index_elements=["patch_id"])
+            await session.execute(stmt)
+            await session.commit()
+
+    async def get(self, patch_id: str) -> Patch | None:
+        async with new_session() as session:
+            row = (
+                await session.execute(select(PatchORM).where(PatchORM.patch_id == patch_id))
+            ).scalar_one_or_none()
+            if row is None:
+                return None
+            return _orm_to_patch(row)
+
+    async def save_application_result(self, result: PatchApplicationResult) -> None:
+        async with new_session() as session:
+            stmt = pg_insert(PatchApplicationResultORM).values(
+                patch_id=result.patch_id,
+                applied=result.applied,
+                regression_passed=result.regression_passed,
+                working_skill_version_ref=result.working_skill_version_ref,
+                detail=result.detail,
+                created_at=datetime.now(UTC),
+            )
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["patch_id"],
+                set_={
+                    "applied": stmt.excluded.applied,
+                    "regression_passed": stmt.excluded.regression_passed,
+                    "working_skill_version_ref": stmt.excluded.working_skill_version_ref,
+                    "detail": stmt.excluded.detail,
+                },
+            )
+            await session.execute(stmt)
+            await session.commit()
+
+    async def list_by_skill(self, skill_id: str) -> list[Patch]:
+        async with new_session() as session:
+            rows = (
+                await session.execute(select(PatchORM).where(PatchORM.skill_id == skill_id))
+            ).scalars()
+            return [_orm_to_patch(r) for r in rows]
+
+
+def _orm_to_patch(row: PatchORM) -> Patch:
+    return Patch(
+        patch_id=row.patch_id,
+        skill_id=row.skill_id,
+        base_skill_version_ref=row.base_skill_version_ref,
+        patch_type=row.patch_type,
+        target_path=row.target_path,
+        diff=row.diff,
+        rationale=row.rationale,
+        triggered_by_finding_id=row.triggered_by_finding_id,
+        created_at=row.created_at,
+    )
+
+
+class PipelineStateRepository:
+    """`PipelineState.retry_counts` 的落盘读写（docs/dev/09 第 5 节要求的 Repository 追加方法）。
+
+    与 LangGraph checkpoint 里的 `PipelineState.retry_counts` 是**互补**关系而不是
+    竞争关系：checkpoint 记的是节点之间的图状态，这里记的是某个节点内部闭环循环
+    的进度。节点结束时是否把本表的值回写进图状态，由调用方（docs/dev/11/15 的
+    节点）决定，本层不擅自改图状态。
+    """
+
+    async def increment_retry(self, run_id: str, node_name: str) -> int:
+        async with new_session() as session:
+            stmt = pg_insert(NodeRetryCountORM).values(
+                run_id=run_id,
+                node_name=node_name,
+                retry_count=1,
+                updated_at=datetime.now(UTC),
+            )
+            upsert_stmt = stmt.on_conflict_do_update(
+                constraint="uq_node_retry_counts_key",
+                set_={
+                    "retry_count": NodeRetryCountORM.retry_count + 1,
+                    "updated_at": stmt.excluded.updated_at,
+                },
+            ).returning(NodeRetryCountORM.retry_count)
+            result = await session.execute(upsert_stmt)
+            await session.commit()
+            return int(result.scalar_one())
+
+    async def get_retry_counts(self, run_id: str) -> dict[str, int]:
+        async with new_session() as session:
+            rows = (
+                await session.execute(
+                    select(NodeRetryCountORM).where(NodeRetryCountORM.run_id == run_id)
+                )
+            ).scalars()
+            return {r.node_name: r.retry_count for r in rows}

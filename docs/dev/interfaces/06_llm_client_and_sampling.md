@@ -98,9 +98,24 @@ Claude 4.6 及以后的模型（`claude-opus-5`、`claude-sonnet-5`、`claude-op
 > 经 OpenRouter 时，不被上游支持的参数多半是被**静默丢弃**而不是报 400。门禁照旧
 > 保留：它的作用是让 `temperature_applied` 如实反映"这次扰动到底有没有发生"。
 
-### `08` 必须做的决策
+### `08` 的决策（**已定稿，2026-09**）
 
-"温度扰动"这条路在 `claude-sonnet-5` 上物理不成立。三个可选方案，由 `08` 定稿：
+**默认改用方案 1（Prompt 视角扰动），另外两条保留为配置项。**
+落点：`agents/judge/consensus.py` + `JudgeSettings.consensus_strategy`
+（`perspective` | `temperature` | `model`，默认 `perspective`）。
+
+- 选它不只是因为"温度用不了"：温度扰动检验的是"同一个裁判掷三次骰子会不会掷出
+  不同结果"，视角扰动才是"三个裁判从证据充分性 / 反例存在性 / 判定一致性三个角度
+  各看一遍"，更接近架构文档说的"高置信度"。
+- 换一个仍支持采样的 `judge_model`，或想做跨模型共识（与 `19` 共享基础设施）时，
+  改一行配置即可，代码不动。
+- **`JudgeVerdict.temperature` 的口径**：记录**请求值**；是否真的下发看
+  `LLMCompletion.temperature_applied`。`perspective` 策略下三副本温度相同——这正是
+  "本次扰动不来自温度"的诚实体现，不要当成 bug。
+- 副本之间的差异通过 `MiniReviewAgent(system_suffix=...)` 注入（该参数为 `08`
+  追加，默认 `None`，不影响任何既有调用）。
+
+以下是当时列出的三个候选，保留备查：
 
 1. **换扰动维度**：保持 `judge_model` 不变，把 3 副本的差异来源从温度改为
    *Prompt 视角扰动*（例如分别以"证据充分性""反例存在性""判定一致性"三个切入

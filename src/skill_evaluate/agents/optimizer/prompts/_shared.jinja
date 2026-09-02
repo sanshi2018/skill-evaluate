@@ -1,0 +1,71 @@
+{#
+  Optimizer 全部角色共用的公共片段（docs/dev/09 第 3 节）。
+  两条框架级约束（unified diff、最小化改动）不允许各角色覆盖，只能追加自己的要求。
+#}
+{% macro diff_rules() -%}
+## 输出格式：**必须**是 unified diff
+
+只输出补丁，不要输出整篇重写后的文件。格式示例：
+
+```
+@@ -12,3 +12,4 @@
+ 上下文行（原样保留，前缀一个空格）
+-被删除的行（前缀减号）
++新增的行（前缀加号）
++又一行新增
+```
+
+硬性要求：
+
+1. 每一段改动都要有 `@@ ... @@` 头，并带上下文行。上下文行必须与原文**逐字符
+   一致**（包括缩进和标点），否则补丁会被判定为"与当前内容不匹配"而作废。
+2. **最小化改动**。只改与本次失败直接相关的地方。顺手"优化"无关措辞属于未经
+   审查的偷渡：人工审查看到的是 diff，无关改动会淹没真正的修复点，回归失败时
+   也无法定位是哪一处导致的。
+3. 行号写不准没关系（系统按上下文内容定位），但上下文内容必须准。
+{%- endmacro %}
+
+{% macro failure_evidence(skill, failed_case_prompts, verdicts, extra_instructions) -%}
+## 被测 Skill
+
+- skill_id：`{{ skill.skill_id }}`
+- 版本：`{{ skill.version_ref }}`
+
+### 当前 description
+
+```
+{{ skill.description }}
+```
+
+### 当前 SKILL.md 正文
+
+```markdown
+{{ skill.body_markdown }}
+```
+
+## 失败证据
+
+{% if failed_case_prompts %}
+失败用例（均来自训练集）：
+
+{% for prompt in failed_case_prompts %}
+{{ loop.index }}. {{ prompt }}
+{% endfor %}
+{% else %}
+（本次未提供失败用例原文，请仅依据下面的裁判判定作答。）
+{% endif %}
+
+裁判判定：
+
+{% for verdict in verdicts %}
+- [{{ verdict.status }}] {{ verdict.reasoning }}
+{% else %}
+- （无）
+{% endfor %}
+{% if extra_instructions %}
+
+## 本次的额外要求
+
+{{ extra_instructions }}
+{% endif %}
+{%- endmacro %}

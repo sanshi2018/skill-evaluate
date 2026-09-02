@@ -75,6 +75,7 @@ class MiniReviewAgent(BaseLLMAgent):
         trace_handle: LangfuseTraceHandle | None = None,
         judge_repository: JudgeRepository | None = None,
         persist: bool = True,
+        system_suffix: str | None = None,
     ) -> None:
         resolved_model = model or get_settings().llm.mini_agent_model
         super().__init__(
@@ -85,6 +86,11 @@ class MiniReviewAgent(BaseLLMAgent):
             trace_handle=trace_handle,
         )
         self._judge_repo = judge_repository or JudgeRepository()
+        # docs/dev/08 第 4 节的接入位：Judge 的共识副本需要在**不改动任何模板**的
+        # 前提下彼此有别（视角扰动的措辞、CRITICAL 场景的 `[step:N]` 引用约定）。
+        # 追加到 system 而不是塞进 content：模板变量是各模板自己的契约，往里塞一个
+        # 只有某些模板会渲染的键，等于让扰动在一半模板上悄悄失效。
+        self._system_suffix = system_suffix
         # 允许关闭落库：docs/dev/08 的共识流程会对同一 subject 连打多次，
         # 由 Judge 侧统一决定哪些 verdict 值得入库。
         self._persist = persist
@@ -108,7 +114,10 @@ class MiniReviewAgent(BaseLLMAgent):
         template = get_template(request.template_key)
         prompt = template.render(request.content)
 
-        raw = await self._call_llm(prompt, template.output_schema, system=_SYSTEM_PROMPT)
+        system = _SYSTEM_PROMPT
+        if self._system_suffix:
+            system = _SYSTEM_PROMPT + "\n\n" + self._system_suffix
+        raw = await self._call_llm(prompt, template.output_schema, system=system)
 
         verdict = JudgeVerdict(
             verdict_id=str(uuid.uuid4()),
