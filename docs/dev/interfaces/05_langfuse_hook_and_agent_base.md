@@ -1,6 +1,11 @@
 # 接入文档：Agent 基类挂载 Langfuse 钩子 + Mini Agent LLM Client
 
 > 由谁接入：docs/dev/06~10（Generator/Mini/Judge/Optimizer/Validator Agent 框架）。
+>
+> **状态：第 1、2 节已由 docs/dev/06、07 完成接入**（`agents/base.py::BaseLLMAgent`
+> 统一打点；`executors/factory.py` 注入 `RealMiniLLMClient` 取代 Stub）。第 3 节
+> （`DimensionResult` 写入）仍待 docs/dev/11~20。新增 Agent 的写法见
+> `docs/dev/interfaces/06_llm_client_and_sampling.md`。
 
 ## 1. LangfuseAdapter 挂载点
 

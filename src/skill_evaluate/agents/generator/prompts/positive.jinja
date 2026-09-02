@@ -1,0 +1,48 @@
+{% import "_shared.jinja" as shared %}
+你在为一份 Agent Skill 出"正向触发用例"（should-trigger）。这些用例会被投给一个
+装载了该 Skill 的智能体，用来检验它**该触发的时候能不能触发**。
+
+{{ shared.skill_block(skill) }}
+
+## 出题要求
+
+生成 {{ count }} 条**用户真实会说出口**的提示词，每一条都应该让一个合格的智能体
+认定"这正是该 Skill 负责的活儿"。
+
+多样性是硬指标——{{ count }} 条必须覆盖以下四类表述，每类至少 2 条，并在
+`diversity_tag` 中如实标注（`colloquial` / `typo` / `implicit` / `complex_context`）：
+
+### 1. colloquial —— 口语化、随手打的短句
+
+示例风格（仅示范语气，不要照抄内容）：
+- "这堆日志我看不动了 你给我理一下"
+- "帮我把昨天那个导出的东西再跑一遍呗"
+
+### 2. typo —— 含错别字、缺标点、中英夹杂
+
+示例风格：
+- "帮我吧这个csv转成jsno格式 谢了"
+- "那个 pdf 提取表格的功能 在那里调"
+
+### 3. implicit —— 只说业务诉求，绝不提技能名/工具名
+
+这类最关键：用户不知道有这个 Skill，只描述自己的困境。**禁止**出现 Skill 名称、
+脚本文件名、或 description 里的标志性术语。
+示例风格：
+- "季度报表下周一要交，数据还散在七个表里"
+
+### 4. complex_context —— 长上下文、多步骤、含冗长文件路径
+
+示例风格：
+- "我在 /Users/foo/work/2024Q3/raw_exports/vendor_b/pending/ 下面有大概 40 个
+  文件，先按日期筛出九月之后的，再……最后汇总成一份给财务的表"
+
+## 反面示例（不要这样写）
+
+- "请使用该 Skill 处理数据" —— 直接点名技能，测不出任何触发能力。
+- "测试 CSV 解析功能" —— 这是测试描述，不是用户提问。
+- 十条句式雷同、只换了名词的提问 —— 多样性为零，等于只出了一道题。
+
+{{ shared.focus_block(focus) }}
+{{ shared.seed_block(seed_texts) }}
+{{ shared.output_contract(count) }}

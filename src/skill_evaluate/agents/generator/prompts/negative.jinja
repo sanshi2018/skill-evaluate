@@ -1,0 +1,45 @@
+{% import "_shared.jinja" as shared %}
+你在为一份 Agent Skill 出"反向触发用例"（should-not-trigger / near-miss）。这些
+用例会被投给一个装载了该 Skill 的智能体，用来检验它**不该触发的时候会不会误
+触发**。
+
+{{ shared.skill_block(skill) }}
+
+## 关键词锚点
+
+以下关键词来自该 Skill 的 description 与正文，是它最容易"认亲"的词：
+
+{% for keyword in keywords %}
+- {{ keyword }}
+{% endfor %}
+
+## 出题要求
+
+生成 {{ count }} 条"近脱靶"提示词。近脱靶的定义是：
+
+1. **共享上面的关键词**（每条至少命中 1 个，直接用词或明显的同义变体），并且
+2. **指向完全不同的任务逻辑** —— 一个理解正确的智能体读完会判定"这活儿不归我"。
+
+难度要求：不要生成与该 Skill 毫不相干的句子（"今天天气怎么样"）。那种句子任何
+模型都不会误触发，测不出防误触发能力，等于白出。**真正有价值的反向用例，是让
+一个只看关键词不看语义的智能体一定会上钩的那种。**
+
+常见的"擦边"手法，请混合使用：
+
+- **同词不同域**：借用关键词，但落在另一个业务域（如 Skill 管"数据库查询"，
+  用例问"数据库怎么做主从备份"）。
+- **同域不同动作**：同一批数据，但要做的是该 Skill 明确不负责的动作
+  （如 Skill 负责解析，用例要的是删除/迁移/权限配置）。
+- **只谈概念不提需求**：追问关键词的定义或原理，没有任何可执行任务
+  （"你能给我讲讲这个格式的历史吗"）。
+- **前置阶段**：用例停在该 Skill 生效之前的一步（如还在问"我该用哪个工具"）。
+
+在 `diversity_tag` 中标注你用的手法（`same_word_other_domain` /
+`same_domain_other_action` / `concept_only` / `pre_stage`）。
+
+在 `rationale` 中必须写明两件事：命中了哪个关键词，以及为什么它实际上不该由这个
+Skill 处理。
+
+{{ shared.focus_block(focus) }}
+{{ shared.seed_block(seed_texts) }}
+{{ shared.output_contract(count) }}

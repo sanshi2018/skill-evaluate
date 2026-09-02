@@ -19,7 +19,15 @@ from skill_evaluate.state.enums import ExecutorBackendType
 
 def build_backend(backend_type: ExecutorBackendType) -> ExecutorBackend:
     if backend_type == ExecutorBackendType.MINI:
-        return MiniAgentBackend()
+        # docs/dev/07 落地后，注入真实的 MiniLLMClient 取代 StubMiniLLMClient
+        # （见 docs/dev/interfaces/05_langfuse_hook_and_agent_base.md 第 2 节）。
+        # 这里的构造是惰性的：`RealMiniLLMClient` 直到首次 complete() 才会去读
+        # API Key，所以没配 Key 的环境仍然可以构造后端。
+        from skill_evaluate.agents.mini.llm_client import RealMiniLLMClient
+
+        return MiniAgentBackend(
+            llm_client=RealMiniLLMClient(), model=get_settings().llm.mini_agent_model
+        )
     settings = get_settings()
     return get_backend(
         settings.executor.backend if settings.executor.backend != "mini" else "hermes"

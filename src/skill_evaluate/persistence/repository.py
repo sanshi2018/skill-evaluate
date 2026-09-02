@@ -158,11 +158,18 @@ def _orm_to_test_case(row: TestCaseORM) -> TestCase:
 
 class TestSuiteRepository:
     async def get_active_version(
-        self, skill_id: str, skill_version_ref: str
+        self, skill_id: str, skill_version_ref: str | None = None
     ) -> TestSuiteVersion | None:
-        """返回 None 时，调用方（docs/dev/06 Generator）判定需要首次生成；
-        版本存在但 skill_version_ref 不匹配时，视为 staleness，由 06 文档决定是否
-        提示需要 force_regenerate。
+        """查询当前 active 的测试集版本。
+
+        - 传入 `skill_version_ref`：只有绑定版本**完全匹配**时才返回，不匹配按
+          "没有可直接复用的版本"处理（返回 None）。
+        - 传入 None：忽略版本号，返回任意 active 版本——docs/dev/06 用这一路查询
+          区分"从来没生成过"（None）与"生成过但版本漂移了"（有值 -> staleness
+          告警，但按约定**不**自动重新生成）。
+
+        `skill_version_ref` 由 docs/dev/06 落地时从必填收窄为可选（追加式变更，
+        原有按位置传参的调用方语义不变）。
         """
         async with new_session() as session:
             row = (
@@ -174,6 +181,8 @@ class TestSuiteRepository:
                 )
             ).scalar_one_or_none()
             if row is None:
+                return None
+            if skill_version_ref is not None and row.skill_version_ref != skill_version_ref:
                 return None
             return TestSuiteVersion(
                 suite_version_id=row.suite_version_id,

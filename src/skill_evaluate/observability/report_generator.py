@@ -50,7 +50,16 @@ class ReportGenerator:
             blocking=blocking,
         )
 
-    async def build(self, run_id: str) -> BenchmarkReport:
+    async def build(
+        self, run_id: str, *, test_suite_staleness_warning: str | None = None
+    ) -> BenchmarkReport:
+        """聚合一次 run 的全部维度结论。
+
+        `test_suite_staleness_warning` 由主图入口节点（docs/dev/24）从
+        `agents.generator.service.EnsureTestSuiteResult.staleness_warning` 透传：
+        用例集与当前 SKILL.md 版本不匹配时，报告里必须能看到这件事，否则读报告的
+        人不知道这份分数是拿旧题跑出来的（docs/dev/06 第 4.1 节）。
+        """
         run = await self._run_repo.get(run_id)
         if run is None:
             raise ObservabilityError(f"未找到 run_id={run_id!r} 对应的运行记录，无法生成报告")
@@ -90,6 +99,7 @@ class ReportGenerator:
             suite_version_id=run["suite_version_id"] or "",
             security_findings_summary=security_findings_summary,
             coverage_summary={},  # 由 docs/dev/16~18 落库后在此聚合，见待接入说明
+            test_suite_staleness_warning=test_suite_staleness_warning,
         )
 
     def to_json(self, report: BenchmarkReport, out_path: str) -> None:

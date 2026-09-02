@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import Field, SecretStr
+from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -42,12 +42,40 @@ class DatabaseSettings(BaseSettings):
 
 
 class LLMSettings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="SKILLEVAL_LLM_")
+    """LLM 访问配置。
 
-    provider: str = "anthropic"
-    judge_model: str = "claude-sonnet-5"  # Judge Agent 默认模型（08 会细化多副本策略）
-    mini_agent_model: str = "claude-haiku-4-5-20251001"  # Mini Agent 走更便宜的模型
-    api_key: SecretStr = SecretStr("")
+    全项目统一走 **OpenRouter**（`https://openrouter.ai/api/v1`，OpenAI 兼容协议），
+    由 `langchain_openai.ChatOpenAI` 承载调用。换模型 = 改这里的 `*_model` 字段，
+    不需要改代码、也不需要再引入第二个厂商 SDK（见
+    docs/dev/interfaces/06_llm_client_and_sampling.md）。
+
+    模型 ID 用 OpenRouter 的 `<厂商>/<模型>` 命名（例如 `anthropic/claude-sonnet-5`、
+    `openai/gpt-5.6-terra`、`google/gemini-3.5-flash`），**不是**各家原生 SDK 的 ID。
+    """
+
+    # populate_by_name：`api_key` 用了 validation_alias（见下），不开这个开关就只
+    # 能用别名做关键字参数构造，代码/测试里 `LLMSettings(api_key=...)` 会报错。
+    model_config = SettingsConfigDict(env_prefix="SKILLEVAL_LLM_", populate_by_name=True)
+
+    provider: str = "openrouter"
+    judge_model: str = "anthropic/claude-sonnet-5"  # Judge Agent 默认模型（08 会细化多副本策略）
+    # Mini Agent 走更便宜的模型。注意 OpenRouter 的版本号用点号（`claude-haiku-4.5`），
+    # 与 Anthropic 原生 API 的短横线写法（`claude-haiku-4-5`）不同，写错会 404。
+    mini_agent_model: str = "anthropic/claude-haiku-4.5"
+    generator_model: str = "anthropic/claude-sonnet-5"  # Generator Agent（docs/dev/06）出题模型
+    # OpenRouter 的 Key（`sk-or-v1-...`）。同时接受裸 `OPENROUTER_API_KEY`，方便与
+    # 其他工具共用同一个环境变量。
+    api_key: SecretStr = Field(
+        default=SecretStr(""),
+        validation_alias=AliasChoices("SKILLEVAL_LLM_API_KEY", "OPENROUTER_API_KEY"),
+    )
+    base_url: str = "https://openrouter.ai/api/v1"  # 自建网关/代理时覆盖
+    # OpenRouter 的可选归因头：填了会出现在 openrouter.ai 的用量排行里，不影响功能。
+    http_referer: str | None = None
+    app_title: str | None = None
+    max_output_tokens: int = 16000  # 非流式请求的默认上限，避免截断（见 docs/dev/06 第 10 节）
+    request_timeout_s: float = 600.0
+    max_structured_retries: int = 2  # 结构化解析失败的重试次数（docs/dev/06 第 5.3 节要求 2 次）
 
 
 class ExecutorSettings(BaseSettings):

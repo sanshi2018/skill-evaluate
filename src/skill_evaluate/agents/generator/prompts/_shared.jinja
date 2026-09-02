@@ -1,0 +1,90 @@
+{#
+  Generator 全部模板共用的片段（docs/dev/06 第 5 节）。
+  这里放"被测 Skill 的原文"和"输出契约"，正/反向模板各自只写自己的出题要求。
+#}
+{% macro skill_block(skill) -%}
+## 被测 Skill
+
+- skill_id: {{ skill.skill_id }}
+- version_ref: {{ skill.version_ref }}
+
+### description 字段原文
+
+{{ skill.description }}
+
+### SKILL.md 正文
+
+{{ skill.body_markdown }}
+{% if skill.scripts %}
+
+### 附带脚本
+
+{% for script in skill.scripts %}
+- {{ script.path }}
+{% endfor %}
+{%- endif %}
+{% if skill.reference_files %}
+
+### 参考资料文件
+
+{% for ref in skill.reference_files %}
+- {{ ref.path }}
+{% endfor %}
+{%- endif %}
+{%- endmacro %}
+
+{% macro focus_block(focus) -%}
+{% if focus and not focus.is_empty %}
+
+## 定向补盲区约束（硬性要求）
+
+这一批用例不是常规发散出题，而是为了补齐已检测到的覆盖率盲区。以下每一项**都
+必须**被至少一条用例覆盖，并在该用例的 target_capability_ids /
+negative_constraint_ids 中如实回填对应 id：
+
+{% for cap_id in focus.capability_ids %}
+- 能力 `{{ cap_id }}`：{{ focus.describe(cap_id) }}
+{% endfor %}
+{% for constraint_id in focus.negative_constraint_ids %}
+- 负向约束 `{{ constraint_id }}`：{{ focus.describe(constraint_id) }}
+{% endfor %}
+{% for pair in focus.combinatorial_pairs %}
+- 组合场景：`{{ pair[0] }}` 与 `{{ pair[1] }}` 必须在**同一条**用例中同时出现
+{% endfor %}
+
+若某项确实无法构造出合理用例，仍要输出一条用例并在其 rationale 中说明原因，
+不要静默跳过——沉默的跳过会让覆盖率报告显示"已补齐"，掩盖真实盲区。
+{% endif %}
+{%- endmacro %}
+
+{% macro seed_block(seed_texts) -%}
+{% if seed_texts %}
+
+## 真实种子锚点（few-shot 参考）
+
+以下是从真实使用日志中抽取的真实用户提问。请让你生成的用例在**语言风格与信息
+密度**上贴近它们，而不是照抄内容：
+
+{% for seed in seed_texts %}
+- {{ seed }}
+{% endfor %}
+{% endif %}
+{%- endmacro %}
+
+{% macro output_contract(count) -%}
+
+## 输出格式
+
+只输出一个 JSON 对象，形如：
+
+{"cases": [{"prompt": "...", "rationale": "...", "diversity_tag": "...",
+"target_capability_ids": [], "negative_constraint_ids": [], "expected_output": null}]}
+
+要求：
+- `cases` 恰好 {{ count }} 条，条与条之间不得语义重复（改几个词不算不同用例）。
+- `prompt` 是**用户会真实打出来的那句话**，不是对用例的描述。不要写"测试……"
+  之类的元叙述，不要出现"用例""测试集"这类词。
+- `rationale` 用一句话说明这条为什么属于本批次的目标类别。
+- `expected_output` 只在能明确断言时填写，否则填 null；不要为了填满字段而编造。
+- 不要输出 JSON 之外的任何文字。
+{%- endmacro %}

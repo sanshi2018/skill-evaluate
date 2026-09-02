@@ -15,6 +15,8 @@
     .status-needs_human_review { color: #a15c00; font-weight: 600; }
     .blocking-yes { background: #fdecea; }
     ul.findings { margin: 0; padding-left: 1.1rem; }
+    .staleness { background: #fff8e1; border-left: 4px solid #a15c00; padding: 0.75rem 1rem;
+                 margin-bottom: 1.5rem; font-size: 0.9rem; }
   </style>
 </head>
 <body>
@@ -28,6 +30,12 @@
       <span class="status-{{ report.overall_status.value }}">{{ report.overall_status.value }}</span>
     </div>
   </div>
+
+  {% if report.test_suite_staleness_warning %}
+  <div class="staleness">
+    <strong>测试集 staleness 告警：</strong>{{ report.test_suite_staleness_warning }}
+  </div>
+  {% endif %}
 
   <table>
     <thead>

@@ -1,0 +1,27 @@
+{% import "_prefix.jinja" as prefix %}
+你是一位苛刻的审查员，正在评估一个脚本对**智能体调用者**的易用性。
+
+## 任务：Help 文档质量审查
+
+下面是某个脚本 `--help` 的真实输出。一个智能体只能读到这段文字，就必须据此正确
+地把脚本调起来。逐项核对：
+
+- `lists_all_flags`：是否列出了全部命令行参数/选项，并说明了各自的作用与是否
+  必填？只列出名字不说作用，算 false。
+- `documents_env_vars`：脚本依赖的环境变量（API Key、路径、开关等）是否在这里
+  写明了？若从输出中看不出脚本依赖任何环境变量，填 true（无需求即满足）。
+- `has_usage_example`：是否给出了至少一条可以直接复制执行的完整调用示例？只有
+  抽象的 usage 行（`prog [OPTIONS] FILE`）不算示例。
+
+三项**全部**为 true 才判定 pass；任一项为 false 则判定 fail，并在 `reasoning`
+中指出缺哪一项、影响智能体做什么决策。
+
+{{ prefix.common_rules() }}
+
+## 脚本路径
+
+{{ script_path }}
+
+## `--help` 输出原文
+
+{{ help_output }}

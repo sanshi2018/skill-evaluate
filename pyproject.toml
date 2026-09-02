@@ -6,6 +6,8 @@ dependencies = [
     "langgraph>=0.2",
     "langgraph-checkpoint-postgres>=2.0",
     "langchain-core>=0.3",
+    # LLM 出口统一走 OpenRouter（OpenAI 兼容协议），由 ChatOpenAI 承载。
+    "langchain-openai>=1.0",
     "pydantic>=2.9",
     "pydantic-settings>=2.5",
     "psycopg[binary,pool]>=3.2",
@@ -50,6 +52,13 @@ target-version = "py313"
 python_version = "3.13"
 strict = true
 plugins = ["pydantic.mypy"]
+
+# `langchain_openai` 只在装了运行期依赖的环境里存在；只跑静态检查的环境（如只装
+# dev 组的 CI 作业）不应因此报 import-not-found。用 overrides 而不是在代码里写
+# `# type: ignore`，避免在真正装了包的环境里反过来触发 unused-ignore。
+[[tool.mypy.overrides]]
+module = "langchain_openai.*"
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

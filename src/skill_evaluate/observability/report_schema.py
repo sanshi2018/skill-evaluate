@@ -34,6 +34,11 @@ class BenchmarkReport(BaseModel):
     suite_version_id: str
     security_findings_summary: dict[SeverityLevel, int] = Field(default_factory=dict)
     coverage_summary: dict[str, float] = Field(default_factory=dict)  # 模块六/七/八产出
+    # docs/dev/06 第 4.1 节：SKILL.md 版本已漂移但按"手动强制"约定没有自动重新
+    # 生成用例集时，把告警原文带进报告，交给人类判断是否需要重新出题。
+    # 由主图入口节点（docs/dev/24）从 `EnsureTestSuiteResult.staleness_warning`
+    # 透传给 `ReportGenerator.build()`。
+    test_suite_staleness_warning: str | None = None
 
     @property
     def blocking(self) -> bool:

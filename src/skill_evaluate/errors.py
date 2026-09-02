@@ -34,3 +34,23 @@ class PersistenceError(SkillEvaluateError):
 
 class ObservabilityError(SkillEvaluateError):
     """报告生成/双写适配器相关错误（见 docs/dev/05）。"""
+
+
+class AgentError(SkillEvaluateError):
+    """Agent 层通用错误基类（见 docs/dev/06~10）。"""
+
+
+class AgentResponseFormatError(AgentError):
+    """LLM 输出无法解析为约定的结构化 schema，且已用尽重试次数（见 docs/dev/06 第 5.3 节）。"""
+
+
+class GenerationError(AgentError):
+    """Generator Agent 生成失败（docs/dev/06 第 5.3 节 `GenerationFailure`）。
+
+    语义约定：一旦抛出，本批次**不产出任何半成品用例集**——调用方不得吞掉本异常
+    然后继续用一个残缺的 TestSuiteVersion 跑流水线。
+    """
+
+
+class ReviewTemplateError(AgentError):
+    """Mini Agent 评审模板注册/查找错误（见 docs/dev/07 第 4 节）。"""

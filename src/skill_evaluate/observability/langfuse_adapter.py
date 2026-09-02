@@ -4,11 +4,13 @@
 整个适配器降级为 no-op，不影响 `benchmark.json`/HTML 主链路——可观测性增强
 能力不应成为流水线单点故障。
 
-**待接入说明**：双写触发点——不要求每个 Agent/Node 都手写
-`langfuse_adapter.log_xxx(...)` 调用，而是采用 docs/dev/07（Mini Agent 框架）
-与后续 Agent 基类中统一的"调用后钩子"模式。本文件只定义适配器接口和字段
-映射规则；具体挂载点在 docs/dev/06~10 的 Agent 基类中声明，接入方式见
-docs/dev/interfaces/05_langfuse_hook.md。
+双写触发点采用统一的"调用后钩子"模式，不要求每个 Agent/Node 手写
+`langfuse_adapter.log_xxx(...)`。
+
+**接入状态**：`log_agent_call()` 的挂载点已由 docs/dev/06 落地——
+`agents/base.py::BaseLLMAgent._invoke()` 在每次 LLM 调用后统一打点，全部 Agent
+（06~10）继承即可。`log_execution_trace()` 仍待各评测维度节点（docs/dev/11~20）
+在拿到 `ExecutionTrace` 后自行调用一次。
 """
 
 from __future__ import annotations

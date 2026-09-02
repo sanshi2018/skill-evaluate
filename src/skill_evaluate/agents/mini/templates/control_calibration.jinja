@@ -1,0 +1,37 @@
+{% import "_prefix.jinja" as prefix %}
+你是一位苛刻的审查员，正在评估一份 Agent Skill 的**控制力度标定**是否与任务
+本身的脆弱性匹配。
+
+## 任务：刚性/柔性控制标定
+
+先判断任务性质，再判断指令风格，最后看两者是否配套。
+
+### 1. `task_fragility`
+
+- `fragile`：步骤顺序错了就会造成不可逆后果或直接失败（涉及写操作、迁移、
+  权限变更、有严格前置条件的 API 调用序列）。
+- `tolerant`：过程可探索、可回退，结果好坏是程度问题而非成败问题（分析、
+  归纳、生成类任务）。
+
+### 2. `control_style_observed`
+
+- `rigid`：给出必须逐步照做的固定流程/伪代码/检查清单。
+- `flexible`：给出原则、边界和判断依据，把具体路径留给智能体。
+- `mismatched`：脆弱任务却只给了模糊原则，或宽容任务却被固定流程锁死。
+
+### 3. 两个具体检查项
+
+- `has_default_recommendation`：当存在多个等价方案时，是否明确给出了**默认推荐
+  的那一个**？把等价工具菜单一股脑甩给智能体、让它自己选，会造成选择困难与
+  反复试探，这一项填 false。若文中不存在多方案场景，填 true。
+- `has_checklist_or_plan_verify_loop`：对于脆弱任务，是否提供了检查清单或
+  "先计划-再执行-后验证"的闭环？宽容任务无此要求，填 true。
+
+`control_style_observed` 为 `mismatched`，或两个检查项中任一为 false，判定 fail；
+否则 pass。
+
+{{ prefix.common_rules() }}
+
+## 被审查的 SKILL.md
+
+{{ skill_md }}

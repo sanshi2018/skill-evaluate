@@ -11,12 +11,13 @@
 是否触发了 Skill / 是否产出了文件"的评测节点（模块一/三/四/五）——这些必须用
 `PluggableAgentBackend`，路由关系见 `routing.py`。
 
-**待接入说明**：实际的评审 Prompt 模板由 docs/dev/07（Mini Agent 评审框架）
-封装；本文件只负责把"调用一次 LLM + 记录 timing"包装成合法的
-`ExecutionTrace`。`MiniLLMClient` 是留给文档 07 接入的协议接口，当前默认实现
-`StubMiniLLMClient` 仅返回占位响应，保证在 07 落地前整条流水线仍可跑通（不
-抛异常、Trace 结构合法），但 `final_response` 会明确标注"stub"字样，任何依赖
-真实语义判断的调用方不应在此阶段读取该字段做业务决策。
+实际的评审 Prompt 模板由 docs/dev/07（Mini Agent 评审框架）封装；本文件只负责
+把"调用一次 LLM + 记录 timing"包装成合法的 `ExecutionTrace`。
+
+**接入状态（docs/dev/07 已落地）**：`executors/factory.py::build_backend()` 现在
+注入 `agents/mini/llm_client.py::RealMiniLLMClient`，`final_response` 是真实模型
+输出，调用方可以据此做业务决策。下面的 `StubMiniLLMClient` 保留为**显式注入用的
+测试替身**（无参构造 `MiniAgentBackend()` 时仍是它），不再是生产默认值。
 """
 
 from __future__ import annotations
@@ -48,8 +49,11 @@ class MiniLLMResult:
 
 
 class StubMiniLLMClient:
-    """占位实现：docs/dev/07 落地前的默认注入对象，见接口清单
-    docs/dev/interfaces/07_mini_agent_llm_client.md。
+    """占位实现：仅供测试/降级场景显式注入。
+
+    生产路径已由 docs/dev/07 的 `RealMiniLLMClient` 接管（见
+    docs/dev/interfaces/07_review_template_registry.md 第 6 节）。响应文本里保留
+    `[stub]` 标记，任何时候在真实报告里看到它都说明后端被错误地无参构造了。
     """
 
     async def complete(self, *, prompt: str, model: str, temperature: float) -> MiniLLMResult:
