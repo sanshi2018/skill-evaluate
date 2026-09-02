@@ -1,0 +1,70 @@
+"""跨模块共享的数据契约（docs/dev/02_核心状态模型与数据契约.md）。
+
+本包是全项目唯一的接口真理来源：任何 Agent / Node / Executor / Judge 都只允许
+通过这里定义的模型互相传递数据，不允许私自新增"临时字段"绕过契约。
+"""
+
+from skill_evaluate.state.assertion import AssertionResult, AssertionSpec
+from skill_evaluate.state.capability import (
+    TIER_WEIGHTS,
+    CapabilityNode,
+    CapabilityTree,
+    NegativeConstraint,
+)
+from skill_evaluate.state.enums import (
+    AssertionStrategy,
+    CapabilityTier,
+    DatasetSplit,
+    ExecutorBackendType,
+    GenerationMode,
+    HookWaitStatus,
+    JudgeVerdictStatus,
+    NodeExecutionStatus,
+    SecurityFindingCategory,
+    SeverityLevel,
+    TestCaseCategory,
+)
+from skill_evaluate.state.judge import ConsensusResult, JudgeVerdict
+from skill_evaluate.state.pipeline_state import PipelineState
+from skill_evaluate.state.security import SecurityFinding
+from skill_evaluate.state.skill import SkillDefinition, SkillReferenceFile, SkillScript
+from skill_evaluate.state.test_case import TestCase, TestSuiteVersion
+from skill_evaluate.state.trace import (
+    ActionStep,
+    ArtifactManifestEntry,
+    ExecutionTrace,
+    TimingCostMetrics,
+)
+
+__all__ = [
+    "TIER_WEIGHTS",
+    "ActionStep",
+    "ArtifactManifestEntry",
+    "AssertionResult",
+    "AssertionSpec",
+    "AssertionStrategy",
+    "CapabilityNode",
+    "CapabilityTier",
+    "CapabilityTree",
+    "ConsensusResult",
+    "DatasetSplit",
+    "ExecutionTrace",
+    "ExecutorBackendType",
+    "GenerationMode",
+    "HookWaitStatus",
+    "JudgeVerdict",
+    "JudgeVerdictStatus",
+    "NegativeConstraint",
+    "NodeExecutionStatus",
+    "PipelineState",
+    "SecurityFinding",
+    "SecurityFindingCategory",
+    "SeverityLevel",
+    "SkillDefinition",
+    "SkillReferenceFile",
+    "SkillScript",
+    "TestCase",
+    "TestCaseCategory",
+    "TestSuiteVersion",
+    "TimingCostMetrics",
+]

@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <title>Skill Evaluate Report - {{ report.skill_id }}</title>
+  <style>
+    body { font-family: -apple-system, Segoe UI, sans-serif; margin: 2rem; color: #1a1a1a; }
+    h1 { font-size: 1.4rem; }
+    .meta { color: #555; margin-bottom: 1.5rem; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #ddd; padding: 0.5rem 0.75rem; text-align: left; font-size: 0.9rem; }
+    th { background: #f5f5f5; }
+    .status-pass { color: #0a7a2f; font-weight: 600; }
+    .status-fail { color: #b3261e; font-weight: 600; }
+    .status-needs_human_review { color: #a15c00; font-weight: 600; }
+    .blocking-yes { background: #fdecea; }
+    ul.findings { margin: 0; padding-left: 1.1rem; }
+  </style>
+</head>
+<body>
+  <h1>Skill Evaluate Report</h1>
+  <div class="meta">
+    <div>run_id: {{ report.run_id }}</div>
+    <div>skill_id: {{ report.skill_id }} @ {{ report.skill_version_ref }}</div>
+    <div>suite_version_id: {{ report.suite_version_id }}</div>
+    <div>generated_at: {{ report.generated_at }}</div>
+    <div>overall_status:
+      <span class="status-{{ report.overall_status.value }}">{{ report.overall_status.value }}</span>
+    </div>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Dimension</th>
+        <th>Status</th>
+        <th>Score</th>
+        <th>Blocking</th>
+        <th>Findings</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for d in report.dimensions %}
+      <tr class="{{ 'blocking-yes' if d.blocking and d.status.value == 'fail' else '' }}">
+        <td>{{ d.dimension }}</td>
+        <td class="status-{{ d.status.value }}">{{ d.status.value }}</td>
+        <td>{{ '%.2f'|format(d.score) if d.score is not none else '-' }}</td>
+        <td>{{ 'yes' if d.blocking else 'no' }}</td>
+        <td>
+          {% if d.findings %}
+          <ul class="findings">
+            {% for f in d.findings %}<li>{{ f }}</li>{% endfor %}
+          </ul>
+          {% else %}-{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <h2>Security Findings Summary</h2>
+  <table>
+    <thead><tr><th>Severity</th><th>Count</th></tr></thead>
+    <tbody>
+      {% for severity, count in report.security_findings_summary.items() %}
+      <tr><td>{{ severity.value }}</td><td>{{ count }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <h2>Coverage Summary</h2>
+  <table>
+    <thead><tr><th>Metric</th><th>Value</th></tr></thead>
+    <tbody>
+      {% for key, value in report.coverage_summary.items() %}
+      <tr><td>{{ key }}</td><td>{{ '%.2f'|format(value) }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</body>
+</html>
