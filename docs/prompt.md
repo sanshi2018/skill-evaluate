@@ -14,5 +14,9 @@ C:\Users\Administrator\PycharmProjects\skill-evaluate\docs\dev 内的md文件为
 
 请结合这两份部分文档完成0-5的功能开发
 
-注意！  如果功能模块如果需要等待后续模块接入，应当留足功能接口，并且生成一份实施后接入文档，等待后续模块开发完毕之后，阅读此文档，以便成功接入。
+注意！  
+模块如果需要接入前序模块，应当检查C:\Users\Administrator\PycharmProjects\skill-evaluate\docs\dev\interfaces是否留有接入文档，如果不存在应当自行生成接入文档
+如果功能模块如果需要等待后续模块接入，应当留足功能接口，并且生成一份实施后接入文档，等待后续模块开发完毕之后，阅读此文档，以便成功接入。
+
+
 
