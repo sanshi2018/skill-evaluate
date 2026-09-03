@@ -37,7 +37,22 @@ verdict = await MiniReviewAgent().review(
 `content` 变量缺失会在**发请求之前**抛 `ReviewTemplateError`（模板环境用
 `StrictUndefined`），不会发出一个缺了半截的 Prompt。
 
-### `12`/`13`/`14`/`19` 还需要做什么
+### `12` 已接入（可作为其余三份的样例）
+
+模块二的三个模板（`omission_audit` / `scoping_check` /
+`progressive_disclosure_static`）已由 docs/dev/12 接入，措辞一字未改，只做了下面
+三件事——`13`/`14`/`19` 照此办理即可：
+
+1. **阈值**：三项均"模板判 fail 即维度记一条 finding"，`progressive_disclosure_static`
+   的容忍度为 0（`SKILLEVAL_CONTEXT_SCOPING_MAX_REFERENCE_FILES_WITHOUT_TRIGGER`）。
+2. **blocking**：三项全部**非阻断**（主观判断只告警），只有行数/Token 硬性超标才
+   阻断。理由见 `docs/dev/interfaces/12_context_scoping_static_pipeline.md` 第 5 节。
+3. **`reference_files` 变量怎么填**：由
+   `nodes/context_scoping/static_scan.py::format_reference_files_for_review()` 渲染成
+   `路径 | 正则初筛结论 | 相关行` 的行列表，**合格项一并给**（只喂可疑项会诱导模型
+   把每一项都判成问题）。
+
+### `13`/`14`/`19` 还需要做什么
 
 Prompt 措辞与判定细则已在 `.jinja` 里写完（含判定信号、反面示例、"什么不算问题"
 的误伤边界）。各文档接入时**只需**：

@@ -25,28 +25,31 @@ skill = load_skill("path/to/skill-dir")   # 或直接传 SKILL.md 文件路径
   后缀（否则本地改了 SKILL.md 却报告"版本没变"，`06` 的 staleness 检测在本地
   永远失效）；非 git 环境退化为 `sha256:<前 12 位>`。
 
-## 三个桩，等 `12`/`14` 替换（**保持签名，只换函数体**）
+## 桩的现状（**保持签名，只换函数体**）
 
-### 1. `estimate_token_count()` —— 精度不足
+### 1. `estimate_token_count()` —— ✅ `12` 已接入
 
-当前是"约 4 字符 1 token（CJK 按 1.5 字符 1 token）"的粗估，够 Generator 做
-Prompt 预算判断，**不足以**支撑 `12` 的 5,000 token 硬性卡线判定（会误判）。
+实现已迁到 `ingestion/token_counter.py`：装了 `tiktoken`（可选依赖）走离线精确
+计数，否则退化为"字符数 × 3/4"的兜底估算。`estimate_token_count()` 的签名与调用点
+（`load_skill()` / `_scan_reference_files()` 内部）都没变。
 
-`12` 接入方式：改用与 `LLMSettings.provider` 匹配的官方 tokenizer
-（Anthropic 走 `client.messages.count_tokens`）离线精确计数。调用点
-（`load_skill()` 内部、`_scan_reference_files()` 内部）不变。
+**要拿 Token 数做卡线判定的场景改用 `count_tokens()`**，它返回
+`TokenCount(value, method, exact)`——`exact=False` 时不得无宽容度地阻断。口径与
+"为什么不用 Anthropic 官方计数"的取舍见
+`docs/dev/interfaces/12_context_scoping_static_pipeline.md` 第 6 节。
 
-### 2. `_extract_trigger_condition()` —— 只捞证据，不做判定
+### 2. `_extract_trigger_condition()` —— ✅ `12` 复核后**维持原样**（不是遗留桩）
 
-当前实现：在正文里找出提及该参考文件的那一行，原样作为
+实现：在正文里找出提及该参考文件的那一行，原样作为
 `SkillReferenceFile.trigger_condition`。正文完全没提到该文件时返回 `None`。
 
-它**不判断**"这句话算不算一个明确的触发条件"——那是语义理解，由 Mini Agent 的
-`progressive_disclosure_static` 模板完成（`07` 已预置，见
-`docs/dev/interfaces/07_review_template_registry.md`）。所以这个字段的正确读法
-是"给 Mini Agent 的证据行"，而不是"已确认的触发条件"。
+它**不判断**"这句话算不算一个明确的触发条件"。`12` 评估后决定不在这里收紧语法：
+判定分两级放在模块二自己那边——`nodes/context_scoping/static_scan.py` 的条件词
+正则做初筛（限定在同一语义单元内），Mini Agent 的 `progressive_disclosure_static`
+模板做语义定夺。收紧到 loader 里只会得到一个更容易误伤、且被**所有**读 Skill 的
+模块共享的正则。
 
-`12` 若要收紧语法（例如只认"当……时，读取 X"这类句式），在此函数内实现。
+所以这个字段的正确读法仍然是"给下游的证据行"，而不是"已确认的触发条件"。
 
 ### 3. `SkillScript.supports_help_flag` 恒为 `None`
 

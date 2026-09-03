@@ -89,6 +89,76 @@ def generate(
 
 
 @app.command()
+def lint(
+    skill_path: str = typer.Option(..., "--skill-path", help="SKILL.md 文件或其所在目录"),
+) -> None:
+    """只跑模块二的**纯代码**扫描：行数/Token 卡线 + 渐进式披露初筛（docs/dev/12）。
+
+    为什么单独开一条命令，而不是让 CI 去跑那条子图：架构文档模块二要求这部分能
+    "类似传统的 Linter 运行模式"集成进 CI，而完整子图需要 Postgres（读被测 Skill、
+    写维度结论）和 LLM（三项同行评审）。本命令**不碰数据库、不发任何请求**，
+    在一个只 checkout 了代码的 CI 作业里就能跑。
+
+    退出码即判定：硬性指标超标返回 1（阻断），其余返回 0。渐进式披露的初筛结果
+    只打印不影响退出码——它是允许误报的启发式，真正的定性由子图里的 Mini Agent
+    同行评审给出（docs/dev/12 第 6 节：硬性数字用 Error，主观判断用 Warning）。
+    """
+    configure_logging()
+
+    from skill_evaluate.config import get_settings
+    from skill_evaluate.ingestion import load_skill
+    from skill_evaluate.nodes.context_scoping import (
+        scan_progressive_disclosure,
+        scan_static_metrics,
+    )
+
+    settings = get_settings().context_scoping
+    skill = load_skill(skill_path)
+    metrics = scan_static_metrics(
+        skill,
+        line_limit=settings.line_limit,
+        token_limit=settings.token_limit,
+        estimate_uncertainty_ratio=settings.estimate_uncertainty_ratio,
+    )
+    scan = scan_progressive_disclosure(
+        skill,
+        line_limit=settings.line_limit,
+        token_limit=settings.token_limit,
+        bulk_inline_ratio=settings.bulk_inline_ratio,
+        token_count=metrics.token_count,
+    )
+
+    typer.echo(
+        f"{skill.skill_id}：{metrics.line_count}/{metrics.line_limit} 行，"
+        f"{metrics.token_count}/{metrics.token_limit} Token"
+        f"（计数口径 {metrics.token_count_method}"
+        f"{'' if metrics.token_count_exact else '，估算值'}）"
+    )
+    if scan.bulk_inline_without_references:
+        typer.secho(
+            "warning: 正文体量接近限额但没有 references/ 参考文件，疑似未做渐进式披露。",
+            fg=typer.colors.YELLOW,
+        )
+    for candidate in scan.candidates:
+        typer.secho(
+            f"warning: {candidate.path} 疑似缺少按需加载触发条件（{candidate.reason}）。",
+            fg=typer.colors.YELLOW,
+        )
+
+    if metrics.needs_human_confirmation:
+        # 估算值判超标：不返回 1。用一个 ±15% 的估算值阻断合并，是
+        # docs/dev/interfaces/06 明确警告过的误判来源。
+        typer.secho(
+            f"warning: Token 数 {metrics.token_count} 超过限额，但本次是估算值，"
+            "需人工确认（安装 tiktoken 可获得离线精确计数）。",
+            fg=typer.colors.YELLOW,
+        )
+    if metrics.hard_fail:
+        typer.secho("error: 硬性指标超标，请精简正文或拆分到 references/。", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+
+@app.command()
 def sync_toolbox() -> None:
     """同步 Git 断言工具箱到本地缓存目录（docs/dev/10 第 3.3 节）。
 

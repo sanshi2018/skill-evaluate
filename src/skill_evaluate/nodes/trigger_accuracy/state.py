@@ -50,8 +50,8 @@ class TriggerAccuracyState(PipelineState, total=False):
 
     _trigger_case_ids: list[str]  # 本维度关心的全部用例（POSITIVE + NEGATIVE）
     _trigger_train_case_ids: list[str]
-    _trigger_validation_case_ids: list[str]
-    _train_failed_case_ids: list[str]  # 驱动 Optimizer 闭环
+    _trigger_validation_case_ids: list[str] # 验证数据集
+    _train_failed_case_ids: list[str]  # 训练数据集，驱动 Optimizer 闭环
     _validation_failed_case_ids: list[str]  # **只**用于最终报告，不驱动任何重试
     _working_skill: SkillDefinition  # 打了 description 补丁的内存版本
     _applied_patch_id: str

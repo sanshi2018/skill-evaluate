@@ -8,9 +8,18 @@ Generator 无法从命令行驱动。
 
 因此本文件按 docs/dev/12 指定的路径与函数名先落一个**最小可用实现**，把口径
 明确的部分（行数、目录扫描、frontmatter 解析）做实，把需要 docs/dev/12 定稿的
-部分（官方 tokenizer 精确计数、trigger_condition 的严格语法、
-`SkillScript.is_mutating` 启发式）做成显式可替换的桩。docs/dev/12 接入时**替换
-函数体、保持签名**即可，调用方（CLI、Generator、后续所有维度节点）不受影响。
+部分做成显式可替换的桩。
+
+docs/dev/12 已接入，两处变化（均为"替换函数体、保持签名"，调用方不受影响）：
+
+- **Token 计数**改由 `ingestion/token_counter.py` 承担：有 `tiktoken` 时离线精确
+  计数，否则退化为"字符数 × 3/4"并**如实标注不精确**（`TokenCount.exact`），
+  由 docs/dev/12 的卡线节点据此决定要不要在限额附近让人复核。
+- `_extract_trigger_condition()` **维持"只捞证据行、不做判定"**：判定留在
+  docs/dev/12 的 `nodes/context_scoping/static_scan.py`（正则初筛）与 Mini Agent
+  的 `progressive_disclosure_static` 模板（语义复核）两级里。理由见该函数注释。
+
+仍未接入的桩：`SkillScript.supports_help_flag` / `is_mutating`（docs/dev/14）。
 接入清单见 docs/dev/interfaces/06_skill_loader_minimal.md。
 """
 
@@ -22,6 +31,7 @@ import subprocess
 from pathlib import Path
 
 from skill_evaluate.errors import ConfigurationError
+from skill_evaluate.ingestion.token_counter import count_tokens
 from skill_evaluate.logging import get_logger
 from skill_evaluate.state.skill import SkillDefinition, SkillReferenceFile, SkillScript
 
@@ -78,17 +88,17 @@ def load_skill(skill_path: str | Path) -> SkillDefinition:
 
 
 def estimate_token_count(text: str) -> int:
-    """Token 估算（**桩实现**）。
+    """Token 估算的向后兼容入口。
 
-    docs/dev/12 第 2 节要求使用与 `LLMSettings.provider` 匹配的官方 tokenizer
-    （Anthropic 走 `client.messages.count_tokens`）离线精确计数。在那之前用
-    "约 4 字符 1 token（CJK 按 1.5 字符 1 token）"的粗估，仅够 Generator 的
-    Prompt 预算判断使用；**不要**用这个值去做 docs/dev/12 的 5,000 token 硬性
-    卡线判定——精度不足会造成误判。
+    实现已由 docs/dev/12 迁到 `ingestion/token_counter.py`（有 `tiktoken` 则离线
+    精确计数，否则按字符数 × 3/4 估算）。这里保留原签名，是因为 docs/dev/06 的
+    Generator 侧调用点只关心一个整数、不关心精度。
+
+    **需要拿这个数字做卡线判定的调用方请改用 `token_counter.count_tokens()`**，
+    它会一并返回"用的哪种计数器、精不精确"——拿一个可能是估算值的数字去阻断
+    别人的合并请求，是 docs/dev/interfaces/06 明确警告过的误判来源。
     """
-    cjk = sum(1 for ch in text if "一" <= ch <= "鿿")
-    ascii_like = len(text) - cjk
-    return int(cjk / 1.5 + ascii_like / 4)
+    return count_tokens(text).value
 
 
 # --------------------------------------------------------------------------- #
@@ -200,10 +210,14 @@ def _scan_scripts(root: Path, body: str) -> list[SkillScript]:
 def _extract_trigger_condition(body: str, relative_path: str) -> str | None:
     """从正文里找出提及该参考文件的那一行，作为"按需加载触发条件"的候选原文。
 
-    **桩实现**：docs/dev/12 需要的是"是否**明确声明了**触发条件"这一判定，涉及
-    语义理解（由 Mini Agent 的 `progressive_disclosure_static` 模板完成）。这里
-    只负责把证据行捞出来喂给它；正文完全没提到该文件时返回 None，本身就是
-    docs/dev/12 要报的问题之一。
+    **本函数刻意不做判定**（docs/dev/12 复核后维持原样，不是遗留的桩）：
+    "这句话算不算一个明确的触发条件"是语义问题，交给两级复核——
+    `nodes/context_scoping/static_scan.py` 的条件词正则做初筛，Mini Agent 的
+    `progressive_disclosure_static` 模板做语义定夺。若把判定收紧到这里，得到的
+    只会是一个更容易误伤的正则，而且是在**所有**读 Skill 的模块之间共享的那一份。
+
+    所以本字段的正确读法是"给下游的证据行"，不是"已确认的触发条件"。正文完全
+    没提到该文件时返回 None——那本身就是 docs/dev/12 要报的问题之一。
     """
     stem = Path(relative_path).name
     for line in body.splitlines():

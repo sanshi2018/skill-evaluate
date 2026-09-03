@@ -101,6 +101,36 @@ class ExecutorSettings(BaseSettings):
     max_concurrent_sandboxes: int = 10
 
 
+class ContextScopingSettings(BaseSettings):
+    """模块二（docs/dev/12）：上下文利用率与范围界定静态评测的阈值。
+
+    默认值取自架构文档明确给出的数字（500 行 / 5,000 Token），做成配置项是为了让
+    团队按自身规范收紧或放宽，**不是**为了在 CI 里临时调大好让某次合并通过。
+
+    为什么阈值在这里、而冗余执行次数在 `TriggerAccuracyDeps` 里是常量：500/5000
+    是可以独立调整的口径（调了只是卡得松紧不同，判定语义不变），而模块一的"跑 3
+    次 + 阈值 0.5"两个数字互相绑定，单独调一个会让判定语义悄悄变化。
+    """
+
+    model_config = SettingsConfigDict(env_prefix="SKILLEVAL_CONTEXT_SCOPING_")
+
+    line_limit: int = 500
+    token_limit: int = 5000
+    # Token 计数不精确时（没装 tiktoken，退化为"字符数 × 3/4"）的不确定带宽度。
+    # 估算值落在 `token_limit × (1 ± ratio)` 区间内时，本维度**不阻断**而是判
+    # NEEDS_HUMAN_REVIEW——拿一个 ±15% 的估算值去阻断别人的合并请求，是
+    # docs/dev/interfaces/06 明确警告过的误判来源。精确计数时本项不生效。
+    estimate_uncertainty_ratio: float = 0.15
+    # 允许几个 references/ 文件缺少按需加载触发条件。默认 0：渐进式披露的意义
+    # 就在于"条件明确"，缺一个就该有人看一眼。该判定是非阻断的 Warning
+    # （docs/dev/12 第 6 节），所以零容忍不会误伤合并流程。
+    max_reference_files_without_trigger: int = 0
+    # 正文规模达到限额的这个比例、却一个参考文件都没有时，判定为"该做渐进式
+    # 披露而没做"（架构文档模块二第 1 节的目录结构审查）。0.8 = 400 行 / 4000
+    # Token 就该开始往 references/ 拆了，而不是等超标之后才发现。
+    bulk_inline_ratio: float = 0.8
+
+
 class JudgeSettings(BaseSettings):
     """Judge Agent 的可信度机制参数（docs/dev/08）。
 
@@ -193,6 +223,7 @@ class Settings(BaseSettings):
     db: DatabaseSettings = Field(default_factory=DatabaseSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
     executor: ExecutorSettings = Field(default_factory=ExecutorSettings)
+    context_scoping: ContextScopingSettings = Field(default_factory=ContextScopingSettings)
     judge: JudgeSettings = Field(default_factory=JudgeSettings)
     optimizer: OptimizerSettings = Field(default_factory=OptimizerSettings)
     validator: ValidatorSettings = Field(default_factory=ValidatorSettings)
