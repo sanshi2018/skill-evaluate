@@ -92,6 +92,13 @@ class ExecutorSettings(BaseSettings):
     hermes_hook_secret: SecretStr = SecretStr("")
     sandbox_wall_clock_timeout_s: int = 60  # 模块五：单沙箱存活硬上限
     outbound_network_allowlist: list[str] = Field(default_factory=list)
+    # docs/dev/11 第 4 节新增（追加式扩展，不改动已有字段语义）：各维度节点同时
+    # 发起的沙箱执行数量上限，由节点侧的 `asyncio.Semaphore` 落实。
+    # 为什么需要它：模块一对每条用例做 3 次冗余执行，`asyncio.gather` 会把整个
+    # 训练集的执行请求一次性打出去（20 条用例 = 60 个沙箱）。这是评测系统自身的
+    # 资源节流（不是被测 Skill 的 DoS 场景），但采用与模块五同一套防御思路：
+    # 并发有上限，而不是"看调度器扛不扛得住"。
+    max_concurrent_sandboxes: int = 10
 
 
 class JudgeSettings(BaseSettings):

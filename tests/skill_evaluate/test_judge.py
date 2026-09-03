@@ -167,10 +167,16 @@ def _judge(
 
 
 class QuantitativeRuleTests:
-    def test_registry_starts_without_dimension_rules(self) -> None:
+    def test_framework_layer_registers_no_rules_of_its_own(self) -> None:
         # docs/dev/08 第 8 节：规则由 11/16~18 各自注册，框架层不预置——预置等于
         # 替还没写的文档决定了"多少算通过"。
-        assert not [name for name in QUANTITATIVE_RULE_REGISTRY if name.startswith("trigger_")]
+        # 判据是"注册进来的规则都不来自框架模块自身"，而不是"注册表是空的"：
+        # docs/dev/11 落地后，`nodes.trigger_accuracy.rules` 会在被导入时注册
+        # trigger_rate_* 两条规则，整个测试进程里注册表本来就不再为空。
+        assert all(
+            rule.__module__ != "skill_evaluate.agents.judge.rules"
+            for rule in QUANTITATIVE_RULE_REGISTRY.values()
+        )
 
     def test_register_and_run_a_rule(self) -> None:
         @register_rule("test_trigger_rate_positive")
