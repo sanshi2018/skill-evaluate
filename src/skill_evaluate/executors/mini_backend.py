@@ -29,8 +29,11 @@ from typing import Protocol
 
 from skill_evaluate.executors.base import ExecutionRequest, ExecutorBackend
 from skill_evaluate.executors.sanitize import truncate_field
+from skill_evaluate.logging import get_logger
 from skill_evaluate.state.enums import ExecutorBackendType
 from skill_evaluate.state.trace import ActionStep, ExecutionTrace, TimingCostMetrics
+
+logger = get_logger(component="mini_backend")
 
 
 class MiniLLMClient(Protocol):
@@ -76,6 +79,16 @@ class MiniAgentBackend(ExecutorBackend):
         self._model = model
 
     async def execute(self, request: ExecutionRequest) -> ExecutionTrace:
+        if request.assertion_specs:
+            # docs/dev/10 第 4.4 节：Mini 后端没有真实沙箱，断言脚本无处可跑。
+            # 忽略并告警，而不是报错——这属于节点路由配错的旁路情况，不该让一次
+            # 静态审查因此失败；warning 会在日志里指认是哪个用例传错了。
+            logger.warning(
+                "mini_backend_assertion_specs_ignored",
+                case_id=request.case.case_id,
+                spec_count=len(request.assertion_specs),
+                hint="断言脚本执行要求真实沙箱，请把该维度路由到 PLUGGABLE 后端",
+            )
         prompt = self._build_prompt(request)
         temperature = 0.1
         if request.sampling_overrides:

@@ -12,10 +12,18 @@ from fastapi import APIRouter, HTTPException, Request
 from skill_evaluate.api.security import verify_hmac_signature
 from skill_evaluate.config import get_settings
 from skill_evaluate.errors import ConfigurationError
-from skill_evaluate.executors.hermes_backend import HermesHookPayload, map_hermes_payload_to_trace
+from skill_evaluate.executors.hermes_backend import (
+    HermesHookPayload,
+    map_assertion_executions,
+    map_hermes_payload_to_trace,
+)
 from skill_evaluate.logging import get_logger
 from skill_evaluate.persistence.checkpointer import thread_id_for
-from skill_evaluate.persistence.repository import RunRepository, TraceRepository
+from skill_evaluate.persistence.repository import (
+    AssertionRepository,
+    RunRepository,
+    TraceRepository,
+)
 from skill_evaluate.persistence.suspension import resolve_suspension
 
 router = APIRouter()
@@ -41,6 +49,7 @@ async def hermes_hook(
     trace = map_hermes_payload_to_trace(payload, case_id=case_id, run_index=run_index)
 
     await TraceRepository().save(trace)
+    await _save_assertion_results(payload, run_id=run_id, case_id=case_id)
 
     run = await RunRepository().get(run_id)
     if run is None:
@@ -56,3 +65,38 @@ async def hermes_hook(
         thread_id=thread_id,
     )
     return {"status": "accepted"}
+
+
+async def _save_assertion_results(payload: HermesHookPayload, *, run_id: str, case_id: str) -> None:
+    """docs/dev/10 第 4.3 节：payload 含 `assertion_executions` 时逐条落
+    `assertion_results` 表（`passed = exit_code == 0`）。
+
+    落库前先确认对应的 `AssertionSpec` 存在：`assertion_results.assertion_id` 是指向
+    `assertion_specs` 的外键，spec 不存在时直接插入会以一个外键违例把整个 Hook 变成
+    500，连**已经落库的 trace 都白落了**。这种情况说明沙箱回传了一个评测系统没规划过
+    的 assertion_id（客户端实现有 bug 或 spec 未持久化），记 warning 跳过即可——
+    Trace 是主线数据，不能被一条来路不明的断言拖垮。
+    """
+    results = map_assertion_executions(payload)
+    if not results:
+        return
+
+    repo = AssertionRepository()
+    for result in results:
+        if await repo.get_spec(result.assertion_id) is None:
+            logger.warning(
+                "hermes_hook_unknown_assertion_id",
+                run_id=run_id,
+                case_id=case_id,
+                assertion_id=result.assertion_id,
+            )
+            continue
+        await repo.save_result(result)
+
+    logger.info(
+        "hermes_hook_assertions_saved",
+        run_id=run_id,
+        case_id=case_id,
+        total=len(results),
+        passed=sum(1 for r in results if r.passed),
+    )

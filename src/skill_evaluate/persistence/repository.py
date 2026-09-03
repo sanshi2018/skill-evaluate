@@ -38,6 +38,7 @@ from skill_evaluate.persistence.models import (
 )
 from skill_evaluate.state.assertion import AssertionResult, AssertionSpec
 from skill_evaluate.state.capability import CapabilityTree
+from skill_evaluate.state.enums import AssertionStrategy
 from skill_evaluate.state.golden import GoldenCase, JudgeMissRecord
 from skill_evaluate.state.judge import ConsensusResult, JudgeVerdict
 from skill_evaluate.state.patch import Patch, PatchApplicationResult
@@ -424,10 +425,75 @@ class AssertionRepository:
                 template_ref=spec.template_ref,
                 script_path=spec.script_path,
                 language=spec.language,
+                script_content=spec.script_content,
+                failure_reason=spec.failure_reason,
+                created_at=spec.created_at or datetime.now(UTC),
             )
             stmt = stmt.on_conflict_do_nothing(index_elements=["assertion_id"])
             await session.execute(stmt)
             await session.commit()
+
+    async def get_spec(self, assertion_id: str) -> AssertionSpec | None:
+        """按 id 读回 spec（docs/dev/10 第 4.3 节：Hook 端点落断言结果前的外键前置检查）。"""
+        async with new_session() as session:
+            row = await session.get(AssertionSpecORM, assertion_id)
+            if row is None:
+                return None
+            return AssertionSpec(
+                assertion_id=row.assertion_id,
+                case_id=row.case_id,
+                strategy=AssertionStrategy(row.strategy),
+                template_ref=row.template_ref,
+                script_path=row.script_path,
+                language=row.language,
+                script_content=row.script_content,
+                failure_reason=row.failure_reason,
+                created_at=row.created_at,
+            )
+
+    async def list_specs_for_case(self, case_id: str) -> list[AssertionSpec]:
+        """一条用例的全部 spec，供断点恢复后重新下发同一份脚本（docs/dev/13/15）。"""
+        async with new_session() as session:
+            rows = (
+                await session.execute(
+                    select(AssertionSpecORM).where(AssertionSpecORM.case_id == case_id)
+                )
+            ).scalars()
+            return [
+                AssertionSpec(
+                    assertion_id=row.assertion_id,
+                    case_id=row.case_id,
+                    strategy=AssertionStrategy(row.strategy),
+                    template_ref=row.template_ref,
+                    script_path=row.script_path,
+                    language=row.language,
+                    script_content=row.script_content,
+                    failure_reason=row.failure_reason,
+                    created_at=row.created_at,
+                )
+                for row in rows
+            ]
+
+    async def list_results(self, assertion_id: str) -> list[AssertionResult]:
+        """一条断言的全部执行结果，供 Judge 组合证据（docs/dev/10 第 7 节）。"""
+        async with new_session() as session:
+            rows = (
+                await session.execute(
+                    select(AssertionResultORM).where(
+                        AssertionResultORM.assertion_id == assertion_id
+                    )
+                )
+            ).scalars()
+            return [
+                AssertionResult(
+                    assertion_id=row.assertion_id,
+                    exit_code=row.exit_code,
+                    stdout=row.stdout,
+                    stderr=row.stderr,
+                    passed=row.passed,
+                )
+                for row in rows
+            ]
 
     async def save_result(self, result: AssertionResult) -> None:
         async with new_session() as session:

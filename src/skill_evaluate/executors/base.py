@@ -12,6 +12,7 @@ from abc import ABC, abstractmethod
 
 from pydantic import BaseModel, Field
 
+from skill_evaluate.state.assertion import AssertionSpec
 from skill_evaluate.state.enums import ExecutorBackendType
 from skill_evaluate.state.skill import SkillDefinition
 from skill_evaluate.state.test_case import TestCase
@@ -31,6 +32,12 @@ class ExecutionRequest(BaseModel):
     # （docs/dev/03 第 4.4 节）与 pending_hooks 唯一键（docs/dev/04 第 5 节），
     # 原文档遗漏了该字段，这里以可选字段形式补齐，默认 None 不影响 MiniAgentBackend。
     run_id: str | None = None
+    # docs/dev/10 第 4.1 节的正式接口扩展：非空时，`PluggableAgentBackend` 在任务
+    # 主流程结束、**容器销毁前**，把每个 spec 的脚本下发到**同一沙箱**执行，
+    # 结果随同一次 Hook 回调上报（不另发一次，避免两次往返之间沙箱状态漂移）。
+    # `MiniAgentBackend` 会忽略本字段并记一条 warning——断言脚本天然要求真实执行
+    # 环境，这也是路由表把相关维度固定为 PLUGGABLE 后端的原因之一。
+    assertion_specs: list[AssertionSpec] = Field(default_factory=list)
 
 
 class ExecutorBackend(ABC):

@@ -61,6 +61,13 @@ plugins = ["pydantic.mypy"]
 module = "langchain_openai.*"
 ignore_missing_imports = true
 
+# PyYAML 是**可选**依赖：`agents/validator/toolbox.py` 装了就用、没装就退化为内置
+# 的极简 manifest 解析器（docs/dev/10 第 3.1 节）。不写这条 override 的话，装了
+# PyYAML 但没装 types-PyYAML 的环境会因为缺 stub 而报错。
+[[tool.mypy.overrides]]
+module = "yaml.*"
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"

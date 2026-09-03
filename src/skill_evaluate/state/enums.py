@@ -65,8 +65,16 @@ class CapabilityTier(StrEnum):
 
 
 class AssertionStrategy(StrEnum):
-    """Validator Agent 的断言生成策略（docs/dev/02 第 10 节 / docs/dev/10）。"""
+    """Validator Agent 的断言生成策略（docs/dev/02 第 10 节 / docs/dev/10 第 5 节）。
 
+    `NONE` 由 docs/dev/10 补全：它有两个来源，语义都是"这条用例不做确定性断言，
+    完全交给 Judge Agent 的语义裁决"——
+    1. `TestCase.expected_output is None`（架构文档"可以不通过代码检查的断言"）；
+    2. 脚本生成连续失败后的降级（`AssertionSpec.failure_reason` 会写明原因，
+       报告侧据此标记"断言生成失败"供人工关注，而不是让流水线整体中断）。
+    """
+
+    NONE = "none"
     TEMPLATE_LOOKUP = "template_lookup"
     TEMPLATE_INHERIT = "template_inherit"
     GENERATED_FROM_SCRATCH = "generated_from_scratch"

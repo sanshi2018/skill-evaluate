@@ -163,6 +163,12 @@ class AssertionSpecORM(Base):
     template_ref: Mapped[str | None] = mapped_column(String, nullable=True)
     script_path: Mapped[str | None] = mapped_column(String, nullable=True)
     language: Mapped[str] = mapped_column(String, default="python", nullable=False)
+    # docs/dev/10 追加（revision 0005）：脚本正文与 NONE 策略的原因。
+    # 脚本正文必须落库——断点恢复后重新下发沙箱时要用同一份脚本，重新生成一份
+    # 会让恢复前后的断言不是同一条断言。
+    script_content: Mapped[str | None] = mapped_column(String, nullable=True)
+    failure_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class AssertionResultORM(Base):

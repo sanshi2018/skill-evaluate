@@ -11,10 +11,11 @@
 你是高级ai agent应用开发工程师，根据项目文档完成具体的代码编写
 其中C:\Users\Administrator\PycharmProjects\skill-evaluate\docs\_5_关键架构.md 架构设计总文档。
 C:\Users\Administrator\PycharmProjects\skill-evaluate\docs\dev 内的md文件为具体的开发文档。
-其中\docs\dev 中的文档0-7已经开发完毕
-请接着实现文档8-9
+其中\docs\dev 中的文档0-9已经开发完毕
+请接着实现文档10
 
 注意！  
+你产出的代码中关键方法，关键字段都应该有合适的注释，标明这段代码到底是做什么，为什么这样做
 模块如果需要接入前序模块，应当检查C:\Users\Administrator\PycharmProjects\skill-evaluate\docs\dev\interfaces是否留有接入文档，如果存在以依照接入文档接入
 另外可以自行辨别是否需要接入前置模块，即使不存在接入文档也应该去接入
 如果功能模块如果需要等待后续模块接入，应当留足功能接口，并且生成一份实施后接入文档，等待后续模块开发完毕之后，阅读此文档，以便成功接入。

@@ -24,6 +24,8 @@ from skill_evaluate.errors import ExecutorBackendError
 from skill_evaluate.executors.base import ExecutionRequest, ExecutorBackend
 from skill_evaluate.executors.registry import register_backend
 from skill_evaluate.executors.sanitize import truncate_field
+from skill_evaluate.logging import get_logger
+from skill_evaluate.state.assertion import AssertionResult, AssertionSpec
 from skill_evaluate.state.enums import ExecutorBackendType
 from skill_evaluate.state.trace import (
     ActionStep,
@@ -31,6 +33,8 @@ from skill_evaluate.state.trace import (
     ExecutionTrace,
     TimingCostMetrics,
 )
+
+logger = get_logger(component="hermes_backend")
 
 
 class HermesUsage(BaseModel):
@@ -56,6 +60,20 @@ class HermesFsDiffItem(BaseModel):
     op: str
 
 
+class HermesAssertionExecution(BaseModel):
+    """沙箱内一条校验脚本的执行结果（docs/dev/10 第 4.3 节 Hook Payload 扩展）。
+
+    与 `HermesTrajectoryItem` 分开建模是有意的：断言脚本不是被测 Agent 的行为，
+    不该混进 `trajectory[]` 被当成"Agent 做了什么"来统计——它是评测系统自己注入
+    的检查步骤，独立落 `assertion_results` 表。
+    """
+
+    assertion_id: str
+    exit_code: int
+    stdout: str | None = None
+    stderr: str | None = None
+
+
 class HermesHookPayload(BaseModel):
     """Hermes Hook 回调 body 的强类型 schema（docs/dev/03 第 4.3 节字段映射表左列）。"""
 
@@ -66,6 +84,9 @@ class HermesHookPayload(BaseModel):
     skill_md_loaded: bool | None = None  # None 时走 fallback 判定（见 map_hermes_payload_to_trace）
     started_at: datetime
     finished_at: datetime
+    # docs/dev/10 第 4.3 节追加：任务主流程结束后、容器销毁前执行的校验脚本结果。
+    # 默认空列表——没规划断言的用例（绝大多数维度）payload 形状完全不变。
+    assertion_executions: list[HermesAssertionExecution] = Field(default_factory=list)
 
 
 _SKILL_MD_BASENAME = "SKILL.md"
@@ -130,6 +151,32 @@ def map_hermes_payload_to_trace(
     )
 
 
+def map_assertion_executions(payload: HermesHookPayload) -> list[AssertionResult]:
+    """Hook payload 的 `assertion_executions[]` -> `AssertionResult` 列表。
+
+    `passed` 一律走 `AssertionResult.from_exit_code()`（`exit_code == 0`），
+    docs/dev/10 第 6 节要求这条判定在全局只有一种口径。
+    """
+    return [
+        AssertionResult.from_exit_code(
+            assertion_id=item.assertion_id,
+            exit_code=item.exit_code,
+            stdout=truncate_field(item.stdout) or "",
+            stderr=truncate_field(item.stderr) or "",
+        )
+        for item in payload.assertion_executions
+    ]
+
+
+def executable_assertion_specs(specs: list[AssertionSpec]) -> list[AssertionSpec]:
+    """过滤出真正可下发执行的 spec（docs/dev/10 第 4.2 节）。
+
+    `strategy=NONE` 与"生成失败没有脚本正文"的 spec 不下发：把一个空 spec 交给
+    沙箱只会拿回一条无意义的失败断言，而失败断言在 Judge 眼里是实打实的负面证据。
+    """
+    return [spec for spec in specs if spec.is_executable]
+
+
 def build_failure_trace(*, case_id: str, run_index: int, reason: str) -> ExecutionTrace:
     """保守失败态 Trace（docs/dev/03 第 4.4 节拉取兜底 / docs/dev/04 第 5.3 节超时兜底 共用）。
 
@@ -178,7 +225,16 @@ class HermesSandboxClient(Protocol):
         request: ExecutionRequest,
         callback_url: str,
         hook_secret: str,
-    ) -> HermesSandboxHandle: ...
+    ) -> HermesSandboxHandle:
+        """创建沙箱并下发任务。
+
+        docs/dev/10 第 4.2 节对实现方追加了一条契约：`request.assertion_specs`
+        非空时，实现必须要求 Hermes 在**任务主流程结束、容器销毁之前**，把每个
+        spec 的 `script_content` 写到 `script_path` 并执行，按顺序收集
+        `exit_code`/`stdout`/`stderr`，随**同一次** Hook 回调以
+        `assertion_executions[]` 上报——不要为断言单独再发一次回调，两次网络往返
+        之间沙箱状态可能已经变了。
+        """
 
     async def poll_sandbox(self, sandbox_id: str) -> HermesHookPayload | None:
         """拉取兜底：查询当前沙箱状态，取到什么算什么（docs/dev/03 第 4.4 节第 4 点）。"""
@@ -255,6 +311,20 @@ class HermesBackend(ExecutorBackend):
         callback_url = f"{settings.api.internal_base_url}/hooks/hermes/{run_id}/{request.case.case_id}/{request.run_index}"
         wait_key = f"{run_id}:{request.case.case_id}:{request.run_index}"
         thread_id = thread_id_for(skill_id=request.skill.skill_id, run_id=run_id)
+
+        # docs/dev/10 第 4.2 节：只把真正有脚本的 spec 交给沙箱客户端，客户端据此
+        # 在任务结束、容器销毁前把脚本写到 spec.script_path 并执行，结果随同一次
+        # Hook 回调以 `assertion_executions[]` 上报。
+        dispatchable = executable_assertion_specs(request.assertion_specs)
+        if len(dispatchable) != len(request.assertion_specs):
+            logger.info(
+                "hermes_assertion_specs_filtered",
+                case_id=request.case.case_id,
+                requested=len(request.assertion_specs),
+                dispatchable=len(dispatchable),
+            )
+        if dispatchable != request.assertion_specs:
+            request = request.model_copy(update={"assertion_specs": dispatchable})
 
         try:
             await self._sandbox_client.create_sandbox(

@@ -48,6 +48,23 @@ class HermesSandboxClient(Protocol):
    `pending_hooks` 表补充记录 `sandbox_id`（当前表结构未存，需要新增 Alembic
    revision 追加该列）。
 
+## 追加契约：断言脚本的注入执行（docs/dev/10 第 4 节）
+
+`create_sandbox()` 的实现方还必须处理 `request.assertion_specs`（docs/dev/10 给
+`ExecutionRequest` 追加的字段，默认空列表，绝大多数用例形状不变）：
+
+- 非空时，要求 Hermes 在**任务主流程结束、容器销毁之前**，把每个 spec 的
+  `script_content` 写到 `script_path`，在**同一个沙箱**里按顺序执行
+  （建议超时取 `ValidatorSettings.assertion_timeout_s`），工作目录与任务一致。
+- 收集每条的 `exit_code` / `stdout` / `stderr`，随**同一次** Hook 回调以
+  `assertion_executions[]` 上报（`HermesHookPayload` 已建模）。
+  **不要为断言单独再发一次回调**——两次网络往返之间沙箱状态可能已经变了，那正是
+  "在同一沙箱、任务之后执行"这条要求想避免的情况。
+- `HermesBackend` 已经在下发前用 `executable_assertion_specs()` 滤掉了
+  `strategy=NONE` 与没有脚本正文的 spec，client 拿到的一定是能跑的。
+- `poll_sandbox()` 的拉取兜底路径同样应当把 `assertion_executions` 一起带回来，
+  否则超时兜底场景下断言证据会静默丢失。
+
 ## 不要做的事
 
 - 不要在 `UnconfiguredHermesSandboxClient` 里伪造一个"成功"响应——那会让

@@ -179,7 +179,7 @@ def summarize_dissent(verdicts: Sequence[JudgeVerdict]) -> str:
 
 
 def evaluate_consensus(subject_id: str, verdicts: Sequence[JudgeVerdict]) -> ConsensusResult:
-    """把三份独立判决归并为一个 `ConsensusResult`。
+    """
 
     未达成共识时 `final_status=NEEDS_HUMAN_REVIEW`。**这是给调用方的强约束**
     （docs/dev/08 第 4.4 节）：调用方应路由到人工挂起，既不放行也不判失败，不允许

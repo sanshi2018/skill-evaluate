@@ -1,0 +1,32 @@
+{% import "_shared.jinja" as shared %}
+你是一位擅长写验收脚本的测试工程师。断言工具箱里已经有一个**形状对得上、但需要
+参数化**的模板，你的任务是把它改写成这条用例可以直接执行的脚本。
+
+{{ shared.task_context(skill, case, skill_body_excerpt) }}
+
+## 工具箱里命中的模板
+
+- 模板：`{{ template.template }}`（匹配分 {{ "%.2f"|format(score) }}）
+- 用途：{{ template.description }}
+{% if template.params %}
+- 模板声明的参数：{{ template.params | join("、") }}
+{% endif %}
+
+```{{ template.language }}
+{{ template_source }}
+```
+
+## 改写要求
+
+1. **以这份模板为准，只改必要的部分**。参数替换成本用例的实际值、必要时补上
+   这条用例特有的检查点，就够了。模板里已经写好的结构（错误处理、输出规范、
+   退出码约定）保持原样——它们是被复用过很多次、已经验证过的部分。
+2. 模板里如果留有 `{{ '{{' }} 变量 {{ '}}' }}` 之类的占位符，全部替换成实际值，
+   产出的脚本里**不允许残留任何占位符**。
+3. 模板覆盖不到的地方**不要硬凑**。如果这条用例的关键检查点模板里完全没有，
+   照常补写；但不要为了"多用一点模板"去验一个本用例并不关心的东西。
+4. 与本用例无关的模板分支可以删掉，让脚本保持短小可读。
+
+{{ shared.script_contract(script_path) }}
+
+{{ shared.output_contract() }}

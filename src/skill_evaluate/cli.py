@@ -89,6 +89,42 @@ def generate(
 
 
 @app.command()
+def sync_toolbox() -> None:
+    """同步 Git 断言工具箱到本地缓存目录（docs/dev/10 第 3.3 节）。
+
+    刻意做成一条**独立命令**而不是在 `plan_assertion()` 里隐式触发：评测过程中途
+    去拉一次外部仓库，会让"这次评测用的是哪一版模板"变得不确定，也会把一次网络
+    故障变成一次评测失败。CI 里应当在跑评测**之前**单独执行本命令。
+    """
+    configure_logging()
+
+    from skill_evaluate.agents.validator import AssertionToolbox
+    from skill_evaluate.config import get_settings
+
+    settings = get_settings().validator
+    if not settings.toolbox_repo_url:
+        typer.secho(
+            "未配置 SKILLEVAL_VALIDATOR_TOOLBOX_REPO_URL：Validator 将全部走 "
+            "generated_from_scratch（这是合法状态，不是错误）。",
+            fg=typer.colors.YELLOW,
+        )
+        raise typer.Exit(code=0)
+
+    toolbox = AssertionToolbox()
+
+    async def _run() -> None:
+        if not await toolbox.sync():
+            typer.secho(f"同步失败：{settings.toolbox_repo_url}", fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+        typer.echo(
+            f"已同步到 {toolbox.root}（commit={toolbox.commit_sha()}，"
+            f"{len(toolbox.manifest())} 个模板）"
+        )
+
+    asyncio.run(_run())
+
+
+@app.command()
 def db_init() -> None:
     """初始化数据库 schema（docs/dev/04）：建扩展 + 跑 Alembic 迁移 + 调用 PostgresSaver.setup()。
 

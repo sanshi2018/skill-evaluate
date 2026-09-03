@@ -66,6 +66,9 @@ class LLMSettings(BaseSettings):
     # Optimizer Agent（docs/dev/09）写补丁的模型。补丁会进人工审查、可能被合进
     # 真实仓库，质量优先，因此默认与 judge_model 同档而不是走廉价的 mini 档。
     optimizer_model: str = "anthropic/claude-sonnet-5"
+    # Validator Agent（docs/dev/10）生成校验脚本的模型。脚本的 exit_code 会被当作
+    # 比 LLM 裁决更可靠的"确定性证据"，写错了比没有更糟，因此同样走高档模型。
+    validator_model: str = "anthropic/claude-sonnet-5"
     # OpenRouter 的 Key（`sk-or-v1-...`）。同时接受裸 `OPENROUTER_API_KEY`，方便与
     # 其他工具共用同一个环境变量。
     api_key: SecretStr = Field(
@@ -128,6 +131,31 @@ class OptimizerSettings(BaseSettings):
     temperature: float = 0.2  # 补丁生成偏保守；模型不支持采样时该值不会被下发
 
 
+class ValidatorSettings(BaseSettings):
+    """Validator Agent 与 Git 断言工具箱参数（docs/dev/10 第 3.3、6 节）。
+
+    `toolbox_repo_url` 指向**外部独立仓库** `skill-evaluate-assertion-toolbox`
+    （不是本项目仓库）。未配置时工具箱视为不可用：`plan_assertion()` 会跳过
+    `template_lookup` / `template_inherit`，直接走 `generated_from_scratch`，
+    而不是报错——工具箱是加速与规范化手段，不是运行前置条件。
+    """
+
+    model_config = SettingsConfigDict(env_prefix="SKILLEVAL_VALIDATOR_")
+
+    toolbox_repo_url: str | None = None
+    # 锁定到具体 ref（分支名或 commit sha）。同一次评测运行中断点恢复后引用的
+    # 模板版本不允许漂移，因此实际命中的 commit sha 会写进 AssertionSpec.template_ref。
+    toolbox_ref: str = "main"
+    toolbox_cache_dir: str = "~/.cache/skill-evaluate/assertion-toolbox"
+    # 关键词匹配命中阈值（0~1，模板 keywords 的命中比例）。低于该值判定为未命中，
+    # 转 generated_from_scratch。
+    template_match_threshold: float = 0.34
+    max_script_repair_retries: int = 2  # 静态语法检查失败后的重试次数（docs/dev/10 第 6 节）
+    # 校验脚本在沙箱内的落盘目录。沙箱侧按 AssertionSpec.script_path 写文件并执行。
+    sandbox_script_dir: str = "/tmp/skill-evaluate/assertions"
+    assertion_timeout_s: int = 30  # 单条断言脚本在沙箱内的执行超时，供沙箱客户端下发
+
+
 class LangfuseSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="SKILLEVAL_LANGFUSE_")
 
@@ -160,6 +188,7 @@ class Settings(BaseSettings):
     executor: ExecutorSettings = Field(default_factory=ExecutorSettings)
     judge: JudgeSettings = Field(default_factory=JudgeSettings)
     optimizer: OptimizerSettings = Field(default_factory=OptimizerSettings)
+    validator: ValidatorSettings = Field(default_factory=ValidatorSettings)
     langfuse: LangfuseSettings = Field(default_factory=LangfuseSettings)
     api: ApiSettings = Field(default_factory=ApiSettings)
 

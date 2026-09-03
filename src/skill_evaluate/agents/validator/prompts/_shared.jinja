@@ -1,0 +1,68 @@
+{#
+  Validator 两条生成路径共用的公共片段（docs/dev/10 第 2、6 节）。
+  脚本输出规范（stdout/stderr/exit_code）是框架级约束，任何路径都不许放松。
+#}
+{% macro task_context(skill, case, skill_body_excerpt) -%}
+## 被测 Skill
+
+- skill_id：`{{ skill.skill_id }}`
+- description：{{ skill.description }}
+
+### SKILL.md 正文（节选）
+
+```markdown
+{{ skill_body_excerpt }}
+```
+
+## 本次要验证的用例
+
+- case_id：`{{ case.case_id }}`
+- 类别：`{{ case.category }}`
+
+### 交给被测 Agent 的任务指令
+
+```
+{{ case.prompt }}
+```
+
+### 期望产出（人给出的验收标准）
+
+```
+{{ case.expected_output }}
+```
+{%- endmacro %}
+
+{% macro script_contract(script_path) -%}
+## 校验脚本的硬性规范
+
+脚本会被写入沙箱的 `{{ script_path }}`，在**被测 Agent 完成任务之后、同一个沙箱
+里**执行，工作目录是任务的工作目录，因此可以直接读取任务产出的文件与状态。
+
+1. **`exit_code` 是唯一的结论**：验证通过 `exit 0`，验证不通过 `exit 1`。非 0 且
+   仅非 0 代表失败。不要用 `exit 0` 配合打印 "FAILED" 这种写法——上游只看
+   `exit_code`。
+2. **干净输出走 stdout，日志/诊断走 stderr**。stdout 里只放可被下游管道消费的
+   结果（例如实际读到的值），解释性文字一律 stderr。
+3. **失败时必须在 stderr 里写清楚"期望什么、实际是什么"**。这段文字会作为证据
+   进入裁判环节，只写 "assertion failed" 等于没写。
+4. **脚本自身的异常也算验证失败**：文件不存在、JSON 解析不了，都应当以非 0 退出
+   并在 stderr 说明，而不是抛一个无上下文的 traceback。
+5. **只读验证，不修改现场**：不要创建/删除/改写任务产出的文件，不要联网，不要
+   安装依赖。只用标准库。
+6. **验证任务的产物，不要重做任务**。如果脚本自己把正确答案算了一遍再对比，那
+   验证的是脚本自己，不是被测 Agent。
+7. 不要读取 `{{ script_path }}` 自身，也不要依赖任何本项目（评测框架）的模块。
+{%- endmacro %}
+
+{% macro output_contract() -%}
+## 输出
+
+- `language`：`python` 或 `bash`，与 `script` 实际语言一致。
+- `script`：**完整**脚本正文（不是片段、不是 diff），可以直接落盘执行。
+- `rationale`：这段脚本在验证什么、为什么它能证明任务做没做对。
+- `false_positive_risk`：这段脚本可能在哪种情况下**误判**（明明做对了却退出非 0）。
+  没有就写"无"。这一条会进人工排查线索——断言的假阳性比没有断言更危险，因为它
+  以"确定性证据"的身份进入裁判环节。
+
+只输出 JSON。
+{%- endmacro %}
