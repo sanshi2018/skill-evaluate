@@ -25,6 +25,9 @@ RUN_INDEX_DIMENSION_BASE = 100  # 100 起为各维度专用号段的起点
 RUN_INDEX_AB_LOADED = 100  # 模块三（docs/dev/13）：A/B 对比的"加载 Skill"分支
 RUN_INDEX_AB_BASELINE = 101  # 模块三：A/B 对比的基线分支（不加载 Skill）
 RUN_INDEX_PD_PROBE = 110  # 模块三：渐进式披露动态探查（用例类别本身就是独占的）
+# 模块四（docs/dev/14）**不占号段**：它裸调脚本子进程（`executors/script_sandbox.py`
+# 的 `ScriptSandboxRunner`），一条 `ExecutionTrace` 都不落，与本表无关。登记在这里
+# 是为了让下一个来申领号段的人不必再翻一遍模块四的代码确认这件事。
 
 
 class TimingCostMetrics(BaseModel):

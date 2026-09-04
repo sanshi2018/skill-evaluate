@@ -160,6 +160,58 @@ class InstructionControlSettings(BaseSettings):
     trace_digest_max_output_chars: int = 400
 
 
+class ScriptUsabilitySettings(BaseSettings):
+    """模块四（docs/dev/14）：脚本接口易用性黑盒探测的参数。
+
+    分三类，混在一个类里是因为它们都只服务于同一个维度：
+
+    1. **超时**：三种探测各有各的口径，见各字段说明；
+    2. **容器资源墙**：与 docs/dev/03 第 7 节的沙箱安全边界对应；
+    3. **调用约定**：脏数据/幂等性探测怎么把参数递给脚本。第 3 类是本维度最大的
+       不确定来源——我们并不知道任意一个脚本的参数长什么样，只能按最通行的约定
+       试一次，因此把它做成配置而不是写死的字面量。
+    """
+
+    model_config = SettingsConfigDict(env_prefix="SKILLEVAL_SCRIPT_USABILITY_")
+
+    # 挂起探测的专用短超时（docs/dev/14 第 4 节）。**刻意远小于**常规执行的 60 秒：
+    # 这项测的是"缺参数时脚本该立刻拒绝或报错"，10 秒已经是极宽松的容忍窗口，
+    # 用 60 秒只会让每个不合格脚本白等 50 秒。
+    hang_probe_timeout_s: int = 10
+    help_probe_timeout_s: int = 10
+    # 脏数据与幂等性探测给到 15 秒：它们会走脚本的真实主流程（读文件、做校验），
+    # 比"打印一段 usage 就退出"要慢一个量级。
+    dirty_input_timeout_s: int = 15
+    idempotency_timeout_s: int = 15
+
+    # 防刷屏建议上限：单次执行的 stdout+stderr 原始字节数超过它就记一条告警
+    # （docs/dev/14 第 7 节）。默认与 docs/dev/03 第 8 节的截断阈值对齐——超过我们
+    # 自己都要截断的量，就该由脚本自己先截断。
+    output_truncation_warn_bytes: int = 32 * 1024
+
+    # 脏数据/幂等性探测传参用的标志位。绝大多数 CLI 脚本用 `--input`；改成
+    # `--file`、`--config` 之类只需要改这一项。**探测失败不等于脚本有缺陷**，
+    # 因此"脚本根本不认这个标志"的情形在报告里会如实标注（见 nodes.py）。
+    dirty_input_flag: str = "--input"
+    # 启用哪几种脏数据模式，留空表示全开。取值见 `probes.DIRTY_PAYLOAD_MODES`。
+    dirty_payload_modes: list[str] = Field(default_factory=list)
+    # 超长字符串模式的长度。64KB 远超任何合理输入，又不至于顶到系统的 ARG_MAX。
+    oversized_payload_bytes: int = 64 * 1024
+
+    # 容器资源墙（docs/dev/03 第 7 节的工程约定在本组件上的落地）。
+    docker_binary: str = "docker"
+    container_memory_limit: str = "512m"
+    container_cpu_limit: str = "1.0"
+    container_pids_limit: int = 256
+    # 按语言覆盖运行时镜像，如 `{"python": "internal-registry/python:3.13-slim"}`。
+    # 内网/离线环境用得上：默认镜像来自 Docker Hub，拉不下来时整个维度会全线失败。
+    runtime_image_overrides: dict[str, str] = Field(default_factory=dict)
+    # 同时在飞的容器数上限。默认 None = 复用 `ExecutorSettings.max_concurrent_sandboxes`
+    # ——脚本探测容器比 Agent 沙箱轻得多，但它们跑在同一台机器上，两处各设一套
+    # 上限只会让"到底能同时跑多少个容器"没人算得清。
+    max_concurrent_scripts: int | None = None
+
+
 class JudgeSettings(BaseSettings):
     """Judge Agent 的可信度机制参数（docs/dev/08）。
 
@@ -256,6 +308,7 @@ class Settings(BaseSettings):
     instruction_control: InstructionControlSettings = Field(
         default_factory=InstructionControlSettings
     )
+    script_usability: ScriptUsabilitySettings = Field(default_factory=ScriptUsabilitySettings)
     judge: JudgeSettings = Field(default_factory=JudgeSettings)
     optimizer: OptimizerSettings = Field(default_factory=OptimizerSettings)
     validator: ValidatorSettings = Field(default_factory=ValidatorSettings)

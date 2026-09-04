@@ -19,8 +19,10 @@ docs/dev/12 已接入，两处变化（均为"替换函数体、保持签名"，
   docs/dev/12 的 `nodes/context_scoping/static_scan.py`（正则初筛）与 Mini Agent
   的 `progressive_disclosure_static` 模板（语义复核）两级里。理由见该函数注释。
 
-仍未接入的桩：`SkillScript.supports_help_flag` / `is_mutating`（docs/dev/14）。
-接入清单见 docs/dev/interfaces/06_skill_loader_minimal.md。
+docs/dev/14 已接入一项：`SkillScript.is_mutating` 由 `detect_mutating_script()`
+做静态启发式标注（见该函数的口径说明）。`supports_help_flag` 仍恒为 `None`——
+"脚本认不认 `--help`"只有真的跑一次才知道，属于模块四的黑盒探测结论，静态解析
+给不出可信答案。接入清单见 docs/dev/interfaces/06_skill_loader_minimal.md。
 """
 
 from __future__ import annotations
@@ -85,6 +87,89 @@ def load_skill(skill_path: str | Path) -> SkillDefinition:
         reference_files=_scan_reference_files(root, body),
         scripts=_scan_scripts(root, body),
     )
+
+
+# 突变（写操作）特征的启发式模式表（docs/dev/14 第 7 节）。
+#
+# 按语言族分组而不是一张大表：同一个词在不同语言里含义不同（shell 的 `>` 是重定向，
+# Python 里是比较运算符），混在一起会互相误伤。键是文件后缀，值是该语言里"这行代码
+# 会改变外部状态"的正则。
+#
+# **刻意偏向误报**：漏判（把会写文件的脚本标成 False）会让模块四整个跳过它的幂等性
+# 探测——一个真实缺陷就此静默溜走；误判（把只读脚本标成 True）的代价只是多跑两次
+# 容器、多一条"连续执行两次均正常"的报告行。两种错误的代价不对称，所以宁可多报。
+_MUTATION_PATTERNS: dict[str, tuple[str, ...]] = {
+    ".py": (
+        r"\bopen\s*\([^)]*['\"][waxr]?\+?[wax]",  # open(path, "w"/"a"/"x"/"r+")
+        r"\.write_text\s*\(|\.write_bytes\s*\(|\.writelines\s*\(|\.write\s*\(",
+        r"\bos\.(remove|unlink|rmdir|makedirs|mkdir|rename|replace|chmod|symlink)\b",
+        r"\bshutil\.(copy\w*|move|rmtree|make_archive)\b",
+        r"\.(mkdir|unlink|touch|rename)\s*\(",
+        r"\bjson\.dump\s*\(|\bcsv\.(writer|DictWriter)\b|\.to_csv\s*\(",
+        r"\b(requests|httpx|session|client)\.(post|put|patch|delete)\b",
+        r"\bsubprocess\.(run|call|check_call|check_output|Popen)\b",
+        r"(?i)\b(insert\s+into|update\s+\w+\s+set|delete\s+from|drop\s+table)\b",
+    ),
+    ".sh": (
+        r"(^|\s)(rm|mv|cp|mkdir|touch|chmod|chown|ln|dd|truncate)\s",
+        r">>?\s*[\"'$\w./-]",  # 输出重定向（含追加）
+        r"(^|\s)(tee|sed\s+-i|git\s+(commit|push|add)|npm\s+publish)\b",
+        r"curl\s+[^|]*-X\s*(POST|PUT|PATCH|DELETE)",
+    ),
+    ".js": (
+        r"\bfs(\.promises)?\.(writeFile|appendFile|mkdir|rm|rmdir|unlink|rename|copyFile|truncate)",
+        r"\bcreateWriteStream\s*\(",
+        r"(?s)fetch\s*\([^)]*method\s*:\s*['\"](POST|PUT|PATCH|DELETE)",
+        r"\bchild_process\b|\bexecSync\s*\(|\bspawnSync\s*\(",
+    ),
+    ".rb": (
+        r"\bFile\.(write|delete|rename|open\s*\([^)]*['\"][wa])",
+        r"\bFileUtils\.(mkdir\w*|rm\w*|cp\w*|mv|touch)\b",
+        r"\bNet::HTTP\.(post|put|delete)\b|\bsystem\s*\(",
+    ),
+    ".ps1": (
+        r"\b(Set-Content|Add-Content|Out-File|New-Item|Remove-Item|Move-Item|Copy-Item|Rename-Item)\b",
+        r"\bInvoke-(RestMethod|WebRequest)\b.*-Method\s+(Post|Put|Patch|Delete)",
+        r">>?\s*[\"'$\w./-]",
+    ),
+}
+# 后缀别名：同一族语言共用一张模式表。
+_MUTATION_SUFFIX_ALIASES = {
+    ".bash": ".sh",
+    ".zsh": ".sh",
+    ".ts": ".js",
+    ".mjs": ".js",
+    ".cjs": ".js",
+}
+
+_COMPILED_MUTATION_PATTERNS: dict[str, list[re.Pattern[str]]] = {
+    suffix: [re.compile(pattern) for pattern in patterns]
+    for suffix, patterns in _MUTATION_PATTERNS.items()
+}
+
+
+def detect_mutating_script(source: str, suffix: str) -> bool | None:
+    """判断一个脚本"是否会改变外部状态"（docs/dev/14 第 7 节的启发式标注）。
+
+    返回三态（与 `SkillScript.is_mutating` 的语义一致）：
+
+    - `True`：命中该语言的写操作模式；
+    - `False`：扫过了但一条都没命中；
+    - `None`：**无法判定**——`suffix` 不在模式表覆盖范围内，或 `source` 为空
+      （文件读不到/是二进制）。此时模块四会跳过该脚本的幂等性探测并在报告里
+      写明"建议人工确认"，而不是当成"确认不会写"。
+
+    只做正则扫描、不做 AST 解析：本函数要同时应付 Python/Shell/JS/Ruby/PowerShell
+    五种语言，为每种语言引一个解析器远超这个字段的价值——它的下游用途仅仅是
+    "要不要多跑一次这个脚本"。真正的定性由黑盒探测的执行结果给出。
+    """
+    if not source:
+        return None
+    key = _MUTATION_SUFFIX_ALIASES.get(suffix.lower(), suffix.lower())
+    patterns = _COMPILED_MUTATION_PATTERNS.get(key)
+    if patterns is None:
+        return None
+    return any(pattern.search(source) for pattern in patterns)
 
 
 def estimate_token_count(text: str) -> int:
@@ -195,6 +280,7 @@ def _scan_scripts(root: Path, body: str) -> list[SkillScript]:
         if not file.is_file() or file.suffix not in _SCRIPT_SUFFIXES:
             continue
         rel = file.relative_to(root).as_posix()
+        source = _safe_read(file)
         scripts.append(
             SkillScript(
                 path=rel,
@@ -202,6 +288,9 @@ def _scan_scripts(root: Path, body: str) -> list[SkillScript]:
                 # `--help` 支持与否属于 docs/dev/14 的黑盒探测结论，静态解析拿不到
                 # 可信答案，保持 None（"未知"）而不是猜一个 True/False。
                 supports_help_flag=None,
+                # docs/dev/14 第 7 节：幂等性探测只对"会改变外部状态"的脚本做，
+                # 因此需要先有一个静态判断。读不到内容时传 None（下同三态语义）。
+                is_mutating=detect_mutating_script(source, file.suffix) if source else None,
             )
         )
     return scripts

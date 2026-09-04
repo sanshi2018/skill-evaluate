@@ -203,6 +203,11 @@ from skill_evaluate.state.trace import (
 `14`（脚本易用性）、`15`（红队）、`19`（跨模型矩阵）、`20`（多技能并发）落地时请各
 自申领号段并在此表登记。
 
+**已登记的结论：`14` 不占号段**——模块四裸调脚本子进程（`ScriptSandboxRunner`），
+一条 `ExecutionTrace` 都不落，`execution_traces` 表与它无关，因此按
+`list_by_case()` 聚合的维度不需要为它做任何过滤。理由见
+`docs/dev/interfaces/14_script_usability_probing.md` 第 3.2、4 节。
+
 ---
 
 ## 5. `14`~`20` 可以直接复用的三样东西
