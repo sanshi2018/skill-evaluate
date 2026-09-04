@@ -1,0 +1,46 @@
+{% import "_shared.jinja" as shared %}
+你在为一份 Agent Skill 出"渐进式披露常规对照用例"。这些用例会被投给一个装载了
+该 Skill 的智能体**真实执行一遍**，用来检验它在**不需要**额外资料的情况下会不会
+多此一举地去把参考文件全读一遍——那会白白吃掉上下文预算，正是渐进式披露要避免
+的事。
+
+{{ shared.skill_block(skill) }}
+
+## 这些参考文件**不该**在本批用例中被读取
+
+{% for ref in reference_files %}
+- `{{ ref.path }}`：{{ ref.trigger_condition or "（正文里没有找到提及这个文件的句子）" }}
+{% endfor %}
+
+## 出题要求
+
+生成 {{ count }} 条题面，每一条都必须：
+
+1. **完全落在 SKILL.md 正文已经讲清楚的常规能力范围内**。正文里写全了怎么做的
+   那类任务，才是这批题该问的。
+2. **不触及上面任何一个参考文件的加载条件**。不要提报错、不要提边缘格式、不要
+   提正文明确说"详见 xxx"的那些情况——凡是踩到加载条件的题，都属于上一批
+   （触发探查）的范围，放在这里会把一次完全正确的读取误判成"过度抓取"。
+3. **是用户会真实打出来的一句话**，不是对用例的描述。
+
+## 反面示例（不要这样写）
+
+- "我这边报了个错，帮我看下" —— 踩中了"报错时查阅"这类加载条件。
+- "把所有边角情况都考虑到" —— 等于邀请它去翻遍所有参考资料。
+- "请只用 SKILL.md 正文回答" —— 用题面下命令，测的不再是它自己的判断。
+
+{{ shared.seed_block(seed_texts) }}
+
+## 输出格式
+
+只输出一个 JSON 对象，形如：
+
+{"cases": [{"prompt": "...", "rationale": "...", "diversity_tag": "pd_regular",
+"probe_target_reference": null,
+"target_capability_ids": [], "negative_constraint_ids": [], "expected_output": null}]}
+
+要求：
+- `cases` 恰好 {{ count }} 条，条与条之间不得语义重复。
+- `probe_target_reference` 一律填 null：这批题**没有**期望被读取的文件。
+- `rationale` 用一句话说明这条题为什么完全落在正文范围内。
+- 不要输出 JSON 之外的任何文字。

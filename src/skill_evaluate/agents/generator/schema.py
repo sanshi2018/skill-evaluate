@@ -47,6 +47,11 @@ class GenerationRequest(BaseModel):
     capability_focus: CapabilityFocus | None = None  # None = 常规发散生成
     seed_anchor_ids: list[str] | None = None  # docs/dev/21 扩展点，当前仅作 few-shot 注入
     triggered_by: str  # "manual_cli" | "auto_bootstrap" | "coverage_gap" | ...
+    # 逐类别的数量覆盖（docs/dev/13 追加）。`positive_count`/`negative_count` 是
+    # docs/dev/06 定下的字段，不动；新类别的数量由调用方按自己的语义决定——例如
+    # 模块三的"渐进式披露触发探查"要求**每个参考文件各出一条**，条数只有调用方
+    # 算得出来。未在此声明的类别回落到 `count_for()` 的默认值。
+    category_counts: dict[TestCaseCategory, int] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _validate_counts(self) -> GenerationRequest:
@@ -57,6 +62,15 @@ class GenerationRequest(BaseModel):
         return self
 
     def count_for(self, category: TestCaseCategory) -> int:
+        """该类别这一批要出几条。
+
+        优先级：`category_counts` 显式声明 > POSITIVE/NEGATIVE 的专用字段 >
+        保守默认。显式声明排在最前，是为了让调用方能在不碰 `positive_count`
+        语义的前提下给新类别定量（docs/dev/13 的渐进式披露探查用例就是这么用的）。
+        """
+        explicit = self.category_counts.get(category)
+        if explicit is not None:
+            return explicit
         if category is TestCaseCategory.POSITIVE:
             return self.positive_count
         if category is TestCaseCategory.NEGATIVE:
@@ -80,6 +94,11 @@ class GeneratedCase(BaseModel):
     target_capability_ids: list[str] = Field(default_factory=list)
     negative_constraint_ids: list[str] = Field(default_factory=list)
     expected_output: str | None = None
+    # docs/dev/13：渐进式披露触发探查用例要说明"这条题针对的是哪个参考文件"。
+    # 让模型自己回填而不是事后用关键词反推：出题时它是知道自己在瞄准哪个文件的，
+    # 事后靠正文相似度去猜，等于把一个确定的事实重新变成一次不可靠的推断。
+    # 其余类别的模板不会渲染这个字段，模型不填即为 None。
+    probe_target_reference: str | None = None
 
 
 class GeneratedCaseBatch(BaseModel):

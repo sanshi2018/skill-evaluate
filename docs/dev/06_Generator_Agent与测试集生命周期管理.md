@@ -102,6 +102,24 @@ async def incremental_patch(skill: SkillDefinition, focus: CapabilityFocus, trig
 
 ## 5. 用例生成 Prompt 设计
 
+> **实现期修订（由 docs/dev/13 第 3.1 节正式提出并落地）**：本节原先只描述了
+> 正向/反向两套模板，实现上对应 `agent.py` 里一个硬编码的
+> `_TEMPLATE_BY_CATEGORY` 字典。该字典已改为**类别 → 模板注册表**
+> （`agents/generator/prompts/registry.py`），与 docs/dev/07 的 `ReviewTemplate`
+> 注册机制同构：
+>
+> ```python
+> from skill_evaluate.agents.generator.prompts.registry import register_generation_template
+>
+> register_generation_template(TestCaseCategory.ADVERSARIAL, "adversarial.jinja")
+> ```
+>
+> 新增一个用例类别 = 新增一个 `.jinja` + 一次注册，**不再需要改动 `agent.py`**。
+> 内置注册四条：`positive` / `negative`（本文档）与 `progressive_disclosure_trigger` /
+> `progressive_disclosure_regular`（docs/dev/13 的渐进式披露动态探查用例，见 5.4）。
+> 同时 `GenerationRequest` 追加了 `category_counts`，让调用方能在不碰
+> `positive_count` / `negative_count` 语义的前提下给新类别定量。
+
 ### 5.1 正向触发用例（Should-trigger）
 
 Prompt 模板（`agents/generator/prompts/positive.jinja`）核心要求，直接映射架构文档第 1 节：
@@ -116,6 +134,20 @@ Prompt 模板（`prompts/negative.jinja`）：
 
 - 8-10 个"近脱靶"用例，要求包含与当前 Skill 强相关的共享关键词，但指向完全不同的任务逻辑。
 - 生成时会把 Skill 的 `description` 抽取关键词后，要求模型"围绕这些关键词但故意跑题"，保证反向用例的"近似度"是可控的，而不是随机生成一堆完全无关的句子（那样测不出防误触发能力）。
+
+### 5.4 渐进式披露动态探查用例（由 docs/dev/13 追加）
+
+两个新类别，成对存在，判定方向相反：
+
+- `progressive_disclosure_trigger`（`prompts/pd_trigger.jinja`）：场景**精确命中**某个
+  `references/` 文件声明的加载条件，期望执行时观测到 Agent 读了它。**每个带触发条件
+  的参考文件各出一条**，并由模型回填 `probe_target_reference`（落到 `TestCase` 的同名
+  字段，见 docs/dev/02 的模型追加与 Alembic 迁移 `0006`）。
+- `progressive_disclosure_regular`（`prompts/pd_regular.jinja`）：完全落在正文范围内、
+  **不该**触发任何额外文件读取的常规任务，作为前者的对照组。
+
+只出一半会让评测失效：只有触发探查题时，一份"把参考文件全读一遍"的 Skill 会满分
+通过；只有常规题时，一份"从不读参考文件"的 Skill 会满分通过。
 
 ### 5.3 输出解析与校验
 

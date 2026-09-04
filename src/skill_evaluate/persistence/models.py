@@ -63,6 +63,10 @@ class TestCaseORM(Base):
     target_capability_ids: Mapped[list[Any]] = mapped_column(JSONB, default=list)
     negative_constraint_ids: Mapped[list[Any]] = mapped_column(JSONB, default=list)
     seed_anchor_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # docs/dev/13：渐进式披露动态探查用例指向的参考文件路径；其余类别恒为 NULL。
+    # nullable 是刻意的——它只对两类新用例有意义，给其余几千条用例强塞一个空串
+    # 会让"没有探查目标"和"探查目标是空路径"在查询里分不开。
+    probe_target_reference: Mapped[str | None] = mapped_column(String, nullable=True)
     generator_run_id: Mapped[str] = mapped_column(String, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 

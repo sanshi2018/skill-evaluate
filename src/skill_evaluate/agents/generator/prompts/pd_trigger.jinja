@@ -1,0 +1,52 @@
+{% import "_shared.jinja" as shared %}
+你在为一份 Agent Skill 出"渐进式披露触发探查用例"。这些用例会被投给一个装载了
+该 Skill 的智能体**真实执行一遍**，用来检验它在条件满足时**会不会真的去读**对应
+的参考资料文件——而不是凭记忆或猜测直接作答。
+
+{{ shared.skill_block(skill) }}
+
+## 参考资料文件与它们声明的加载条件
+
+{% for ref in reference_files %}
+- `{{ ref.path }}`
+  - 正文中与之相关的原话：{{ ref.trigger_condition or "（正文里没有找到提及这个文件的句子）" }}
+{% endfor %}
+
+## 出题要求
+
+**一个参考文件出一条题**，共 {{ count }} 条，`probe_target_reference` 字段必须
+如实填写这条题针对的文件路径（例如 `references/errors.md`），路径要与上面列出的
+完全一致。
+
+每条 `prompt` 必须满足：
+
+1. **场景精确命中该文件的加载条件**。例如加载条件是"执行报错时查阅"，那么题面
+   就要是用户真的带着一段报错来求助（"我跑的时候报了 xxx，帮我看看"），而不是
+   一个泛泛的复杂任务。**这是本批用例唯一的价值所在**：条件不成立的题，智能体
+   不读那个文件是完全正确的行为，这条题就什么也没测出来。
+2. **不得点名文件**。题面里不能出现 `references/`、文件名、或"请查阅文档"这类
+   指令——那是在直接命令它去读，测的就不再是"它自己判不判断得出该读"。
+3. **信息要足够具体**，让"该不该读那个文件"有唯一答案。含糊到两可的题面会让
+   判定结果没有意义。
+
+## 反面示例（不要这样写）
+
+- "帮我处理一下数据" —— 没有命中任何加载条件，读不读都对。
+- "看看 references/errors.md 里怎么说" —— 直接点名文件，等于给了答案。
+- 同一个文件出三条只换了措辞的题 —— 探查目标重复，浪费一次真实沙箱执行。
+
+{{ shared.seed_block(seed_texts) }}
+
+## 输出格式
+
+只输出一个 JSON 对象，形如：
+
+{"cases": [{"prompt": "...", "rationale": "...", "diversity_tag": "pd_trigger",
+"probe_target_reference": "references/errors.md",
+"target_capability_ids": [], "negative_constraint_ids": [], "expected_output": null}]}
+
+要求：
+- `cases` 恰好 {{ count }} 条，每条的 `probe_target_reference` 互不相同。
+- `rationale` 用一句话说明这条题命中的是该文件加载条件里的哪一句。
+- `expected_output` 填 null：本批用例判的是"读没读那个文件"，不是最终答案对不对。
+- 不要输出 JSON 之外的任何文字。

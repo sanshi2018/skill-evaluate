@@ -9,7 +9,8 @@
 
 接入清单见 docs/dev/interfaces/07_review_template_registry.md。
 
-导入本包即完成首批 7 个模板的注册（`templates.builtin` 的导入副作用）。
+导入本包即完成内置模板的注册（`templates.builtin` 的首批 7 个 + 各维度自己那份
+模板模块的导入副作用，如 docs/dev/13 的 `templates.instruction_control`）。
 """
 
 from skill_evaluate.agents.mini import templates as templates
@@ -21,6 +22,9 @@ from skill_evaluate.agents.mini.service import (
     ReviewRequest,
 )
 from skill_evaluate.agents.mini.templates import builtin as _builtin  # noqa: F401  # 注册副作用
+from skill_evaluate.agents.mini.templates import (  # noqa: F401  # 注册副作用
+    instruction_control as _instruction_control,
+)
 from skill_evaluate.agents.mini.templates.registry import (
     REVIEW_TEMPLATE_REGISTRY,
     ReviewTemplate,

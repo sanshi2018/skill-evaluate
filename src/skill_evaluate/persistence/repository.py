@@ -38,7 +38,7 @@ from skill_evaluate.persistence.models import (
 )
 from skill_evaluate.state.assertion import AssertionResult, AssertionSpec
 from skill_evaluate.state.capability import CapabilityTree
-from skill_evaluate.state.enums import AssertionStrategy
+from skill_evaluate.state.enums import AssertionStrategy, TestCaseCategory
 from skill_evaluate.state.golden import GoldenCase, JudgeMissRecord
 from skill_evaluate.state.judge import ConsensusResult, JudgeVerdict
 from skill_evaluate.state.patch import Patch, PatchApplicationResult
@@ -132,6 +132,48 @@ class TestCaseRepository:
             ).scalars()
             return [_orm_to_test_case(r) for r in rows]
 
+    async def list_by_category(
+        self, suite_version_id: str, category: TestCaseCategory
+    ) -> list[TestCase]:
+        """按类别取某一版用例集里的用例（docs/dev/13 第 3 节要求的查询）。"""
+        return await self.list_by_categories(suite_version_id, [category])
+
+    async def list_by_categories(
+        self, suite_version_id: str, categories: list[TestCaseCategory]
+    ) -> list[TestCase]:
+        """按若干类别取某一版用例集里的用例。
+
+        **以 `suite_version_id` 而不是 `skill_id` 为口径**：同一个 Skill 下会存在
+        多版用例集（force_regenerate 保留历史、incremental_patch 叠加新版），按
+        skill_id 查会把已经不在 active 版本里的历史用例一起捞回来，评测就跑了一批
+        没人再维护的旧题。
+
+        版本不存在时返回空列表而不是报错：调用方（各维度的 prepare 节点）拿到空
+        列表后自己决定是"这个维度这次没得测"（写 NEEDS_HUMAN_REVIEW）还是"正常
+        情况"，比在仓储层替它们决定要合适。
+        """
+        if not categories:
+            return []
+        async with new_session() as session:
+            suite = (
+                await session.execute(
+                    select(TestSuiteVersionORM.case_ids).where(
+                        TestSuiteVersionORM.suite_version_id == suite_version_id
+                    )
+                )
+            ).scalar_one_or_none()
+            if not suite:
+                return []
+            rows = (
+                await session.execute(
+                    select(TestCaseORM).where(
+                        TestCaseORM.case_id.in_(list(suite)),
+                        TestCaseORM.category.in_([c.value for c in categories]),
+                    )
+                )
+            ).scalars()
+            return [_orm_to_test_case(r) for r in rows]
+
 
 def _test_case_values(case: TestCase) -> dict[str, object]:
     return {
@@ -144,6 +186,7 @@ def _test_case_values(case: TestCase) -> dict[str, object]:
         "target_capability_ids": case.target_capability_ids,
         "negative_constraint_ids": case.negative_constraint_ids,
         "seed_anchor_id": case.seed_anchor_id,
+        "probe_target_reference": case.probe_target_reference,
         "generator_run_id": case.generator_run_id,
         "created_at": case.created_at,
     }
@@ -160,6 +203,7 @@ def _orm_to_test_case(row: TestCaseORM) -> TestCase:
         target_capability_ids=row.target_capability_ids or [],
         negative_constraint_ids=row.negative_constraint_ids or [],
         seed_anchor_id=row.seed_anchor_id,
+        probe_target_reference=row.probe_target_reference,
         generator_run_id=row.generator_run_id,
         created_at=row.created_at,
     )

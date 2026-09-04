@@ -131,6 +131,35 @@ class ContextScopingSettings(BaseSettings):
     bulk_inline_ratio: float = 0.8
 
 
+class InstructionControlSettings(BaseSettings):
+    """模块三（docs/dev/13）：指令控制度与执行效果评测的参数。
+
+    这里的每一项都是**成本或口径**开关，不是"卡线阈值"（本维度的判定要么是 LLM
+    语义裁决、要么是对 Trace 的确定性扫描，没有类似模块二 500 行那样的硬指标）。
+    """
+
+    model_config = SettingsConfigDict(env_prefix="SKILLEVAL_INSTRUCTION_CONTROL_")
+
+    # A/B 对比每条分支跑几次。**默认 1**（docs/dev/13 第 4 节的明确成本决策）：
+    # 架构文档模块一要求每用例 3 次冗余，但 A/B 是"每用例 2 条分支 × 每分支 N 次"，
+    # N=3 会让本维度的成本达到基础评测的 6 倍。ROI 判定关心的是"存在不存在显著
+    # 差异"，容忍单次执行的非确定性噪音（模板正文里也明确告诉了裁判这一点）。
+    # 若报告显示 ROI 判定本身抖动过大，调大这一项即可，不需要改任何代码结构。
+    run_count_per_arm: int = 1
+    # 常规探查用例的 Token 水位容忍比例：超过"同批常规用例中位数 × (1 + ratio)"
+    # 才记一条水位告警。0.5 = 允许比同批常规任务的中位数多烧一半 Token。
+    # 为什么用同批中位数而不是一个绝对数字：`total_tokens` 包含任务提示词、工具
+    # 输出等与 Skill 无关的量，绝对阈值换一个 Skill 就得重调，毫无意义。
+    pd_token_watermark_ratio: float = 0.5
+    # 算中位数至少要几个干净样本（没读任何参考文件的常规用例）。样本太少时中位数
+    # 本身就是噪音，此时**不做**水位检查而不是拿一两条数据去指控别人。
+    pd_watermark_min_samples: int = 3
+    # 交给效率诊断模板的动作步数上限与单步输出截断长度。Trace 可以有上百步、每步
+    # 几十 KB 输出；整串塞进 Prompt 既超上下文也让裁判抓不住重点。
+    trace_digest_max_steps: int = 40
+    trace_digest_max_output_chars: int = 400
+
+
 class JudgeSettings(BaseSettings):
     """Judge Agent 的可信度机制参数（docs/dev/08）。
 
@@ -224,6 +253,9 @@ class Settings(BaseSettings):
     llm: LLMSettings = Field(default_factory=LLMSettings)
     executor: ExecutorSettings = Field(default_factory=ExecutorSettings)
     context_scoping: ContextScopingSettings = Field(default_factory=ContextScopingSettings)
+    instruction_control: InstructionControlSettings = Field(
+        default_factory=InstructionControlSettings
+    )
     judge: JudgeSettings = Field(default_factory=JudgeSettings)
     optimizer: OptimizerSettings = Field(default_factory=OptimizerSettings)
     validator: ValidatorSettings = Field(default_factory=ValidatorSettings)

@@ -302,7 +302,13 @@ class TriggerAccuracyPipeline:
         failed_case_ids: list[str] = []
 
         for case in await self._cases_for_split(state, split):
-            traces = await self.deps.trace_repository.list_by_case(case.case_id)
+            # 只数**本维度自己**的冗余执行（run_index 0..redundant_runs-1）。
+            # 同一条用例还会被模块三（docs/dev/13）拿去跑 A/B 对比，其中的基线
+            # 分支按定义就是"不加载 Skill"；那些 Trace 落在 100 起的专用号段里
+            # （见 `state/trace.py` 的 run_index 分配表），不筛掉的话它们会被
+            # 当成"这次没触发"算进触发率，把一份正常的 Skill 判成不达标。
+            all_traces = await self.deps.trace_repository.list_by_case(case.case_id)
+            traces = [t for t in all_traces if t.run_index < self.deps.redundant_runs]
             inputs = rules.trigger_rate_inputs(traces)
             verdict = judge.quantitative_verdict(
                 subject_id=case.case_id,

@@ -65,23 +65,70 @@ version = await TestSuiteService().incremental_patch(
 
 ## 3. 新增用例类别（`15` ADVERSARIAL、`20` MULTI_SKILL）
 
-`agents/generator/agent.py::_TEMPLATE_BY_CATEGORY` 目前只注册了 POSITIVE 与
-NEGATIVE。传入未注册的 category 会抛 `GenerationError`，错误信息里直接点名了
-应由哪份文档补齐（不是静默跳过）。
+> ⚠️ **`13` 落地后此节已改**：原先的硬编码字典 `_TEMPLATE_BY_CATEGORY` 已被
+> **注册表**取代，新增类别不再需要改 `agent.py`。
+
+已注册四个类别：`positive` / `negative`（`06`）、`progressive_disclosure_trigger` /
+`progressive_disclosure_regular`（`13`）。传入未注册的 category 仍然抛
+`GenerationError`，错误信息里直接点名了应由哪份文档补齐（不是静默跳过）。
 
 接入方式：
 
 1. 在 `agents/generator/prompts/` 下新增 `adversarial.jinja`（可 `import
    "_shared.jinja"` 复用 `skill_block` / `focus_block` / `output_contract`
    宏，保持输出契约一致）。
-2. 在 `_TEMPLATE_BY_CATEGORY` 注册该 category。
+2. 调一次 `register_generation_template()`——放在
+   `agents/generator/prompts/registry.py` 的内置注册区，或自己模块里做导入副作用
+   （两者都可，前者更容易被人找到）：
+
+   ```python
+   from skill_evaluate.agents.generator.prompts.registry import register_generation_template
+
+   register_generation_template(
+       TestCaseCategory.ADVERSARIAL,
+       "adversarial.jinja",
+       description="红队攻击用例（模块五 / docs/dev/15）",
+   )
+   ```
+
+   重名注册、模板文件不存在都会**立刻**抛 `GenerationError`，不会拖到真实出题时
+   才暴露。
 3. 若需要额外的模板变量（如模块五的攻击手法清单），在
    `GeneratorAgent._generate_category()` 的 `render(...)` 调用处补参数。
    模板环境使用 `StrictUndefined`，变量拼错会在渲染期立刻报错而不是发出一个
    缺了半截的 Prompt。
+4. 条数用 `GenerationRequest.category_counts`（`13` 追加的字段）声明，不要去动
+   `positive_count` / `negative_count` 的语义：
+
+   ```python
+   GenerationRequest(..., category_counts={TestCaseCategory.ADVERSARIAL: 12})
+   ```
 
 `GeneratedCase.diversity_tag` 是自由字符串，新类别可以定义自己的取值集合，
-不需要改 Schema。
+不需要改 Schema。`GeneratedCase.probe_target_reference` 同理是 `13` 追加的可选
+字段，只有声明了 `requires_probe_target=True` 的类别会读它。
+
+### 3.1 `ensure_test_suite(extra_categories=...)`：给自己的维度补一批专属用例
+
+`13` 需要两个只有它自己用的类别，为此给 `ensure_test_suite()` 加了两个关键字参数
+（**追加式扩展，原有调用方不受影响**）：
+
+```python
+result = await TestSuiteService().ensure_test_suite(
+    skill,
+    extra_categories=[TestCaseCategory.PROGRESSIVE_DISCLOSURE_TRIGGER],
+    category_counts={TestCaseCategory.PROGRESSIVE_DISCLOSURE_TRIGGER: 3},
+)
+```
+
+语义仍然是 **REUSE**：只有当现有 active 用例集里这些类别**一条都没有**时才补生成，
+且**只生成这些类别**（正/反向用例原样继承、`split` 归属不变，走
+`INCREMENTAL_PATCH` 模式落一个新版本）。判定口径刻意是"一条都没有"而不是"条数够
+不够"——后者没有客观答案，做成自动触发条件等于给流水线开了个每次运行都可能悄悄
+再出一批题的口子。
+
+请求条数算到 0 时**不会**发 LLM 请求，直接当"这个 Skill 没有这类用例可出"处理
+（`13` 用它表达"这份 Skill 没有 references/，无渐进式披露可探"）。
 
 ## 4. 反坍塌校验与种子锚点（`21`）
 

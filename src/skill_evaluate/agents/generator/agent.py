@@ -21,8 +21,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from skill_evaluate.agents.base import BaseLLMAgent
+from skill_evaluate.agents.generator.prompts.registry import (
+    GenerationTemplate,
+    get_generation_template,
+)
 from skill_evaluate.agents.generator.schema import (
     CapabilityFocus,
+    GeneratedCase,
     GeneratedCaseBatch,
     GenerationRequest,
 )
@@ -30,16 +35,14 @@ from skill_evaluate.agents.llm import AgentLLMClient
 from skill_evaluate.agents.templating import build_prompt_env
 from skill_evaluate.config import get_settings
 from skill_evaluate.errors import AgentResponseFormatError, GenerationError
+from skill_evaluate.logging import get_logger
 from skill_evaluate.observability.langfuse_adapter import LangfuseAdapter, LangfuseTraceHandle
+from skill_evaluate.observability.log_sanitize import sanitize_for_log
 from skill_evaluate.state.enums import DatasetSplit, TestCaseCategory
 from skill_evaluate.state.skill import SkillDefinition
 from skill_evaluate.state.test_case import TestCase
 
 _PROMPT_DIR = Path(__file__).parent / "prompts"
-_TEMPLATE_BY_CATEGORY: dict[TestCaseCategory, str] = {
-    TestCaseCategory.POSITIVE: "positive.jinja",
-    TestCaseCategory.NEGATIVE: "negative.jinja",
-}
 
 _SYSTEM_PROMPT = (
     "你是一位资深的 Agent Skill 测试设计者。你的产出会直接作为 CI/CD 流水线的"
@@ -106,6 +109,8 @@ _STOPWORDS = frozenset(
 )
 _WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9_-]{2,}|[一-鿿]{2,}")
 
+logger = get_logger(component="generator")
+
 
 class GeneratorAgent(BaseLLMAgent):
     """按 `GenerationRequest` 产出 `TestCase` 列表。"""
@@ -167,21 +172,20 @@ class GeneratorAgent(BaseLLMAgent):
         count: int,
         generator_run_id: str,
     ) -> list[TestCase]:
-        template_name = _TEMPLATE_BY_CATEGORY.get(category)
-        if template_name is None:
-            raise GenerationError(
-                f"category={category.value} 尚无对应的生成模板。"
-                "ADVERSARIAL 由 docs/dev/15（Attacker Agent）、MULTI_SKILL 由 "
-                "docs/dev/20 各自新增模板并在 _TEMPLATE_BY_CATEGORY 注册，"
-                "接入方式见 docs/dev/interfaces/06_generator_extension_points.md。"
-            )
+        # 类别 -> 模板从注册表取（docs/dev/13 第 3.1 节对 docs/dev/06 的修订）：
+        # 新增类别不再需要改本文件。未注册的类别在这里报错并点名该由哪份文档补齐。
+        template = get_generation_template(category)
 
-        prompt = self._env.get_template(template_name).render(
+        prompt = self._env.get_template(template.prompt_path).render(
             skill=request.skill,
             count=count,
             focus=request.capability_focus,
             seed_texts=self._resolve_seed_texts(request),
             keywords=extract_keywords(request.skill),
+            # 渐进式披露探查模板（docs/dev/13）需要逐条参考文件的加载条件原文；
+            # 其余模板不渲染这个变量，多传无害（StrictUndefined 只在**用到**未定义
+            # 变量时报错，多给几个不会）。统一传比在这里按类别分支更省心。
+            reference_files=request.skill.reference_files,
         )
 
         try:
@@ -205,11 +209,57 @@ class GeneratorAgent(BaseLLMAgent):
                 target_capability_ids=generated.target_capability_ids,
                 negative_constraint_ids=generated.negative_constraint_ids,
                 seed_anchor_id=None,
+                probe_target_reference=self._resolve_probe_target(
+                    generated, template=template, skill=request.skill
+                ),
                 generator_run_id=generator_run_id,
                 created_at=now,
             )
             for generated in batch.cases
         ]
+
+    @staticmethod
+    def _resolve_probe_target(
+        generated: GeneratedCase, *, template: GenerationTemplate, skill: SkillDefinition
+    ) -> str | None:
+        """核对模型回填的"探查目标参考文件"，返回规范化后的路径（docs/dev/13）。
+
+        只有声明了 `requires_probe_target` 的类别才有这个字段的语义；其余类别一律
+        返回 None，免得某个模板里的自由发挥污染了别的类别的用例。
+
+        核对分两级：先按原文精确匹配 `skill.reference_files` 的 path，再退一步按
+        **文件名**匹配（模型很容易把 `references/errors.md` 写成 `errors.md`，或反
+        过来带上 skill 根目录前缀）。两级都不中就返回 None 并告警——
+        **不抛异常**：一条对不上号的探查用例只是这一条测不出东西，把整批用例连坐
+        作废反而更糟。下游（`nodes/instruction_control/probe.py`）会把"触发探查用例
+        没有探查目标"如实记成一条非严重发现，让人能看见这次少测了什么。
+        """
+        if not template.requires_probe_target:
+            return None
+        raw = (generated.probe_target_reference or "").strip()
+        if not raw:
+            logger.warning(
+                "generator_probe_target_missing",
+                skill_id=skill.skill_id,
+                category=template.category.value,
+                prompt=sanitize_for_log(generated.prompt),
+            )
+            return None
+
+        known = {ref.path for ref in skill.reference_files}
+        if raw in known:
+            return raw
+        by_basename = {ref.path.rsplit("/", 1)[-1]: ref.path for ref in skill.reference_files}
+        matched = by_basename.get(raw.rsplit("/", 1)[-1])
+        if matched is None:
+            logger.warning(
+                "generator_probe_target_unknown",
+                skill_id=skill.skill_id,
+                category=template.category.value,
+                probe_target_reference=raw,
+                known_reference_files=sorted(known),
+            )
+        return matched
 
     @staticmethod
     def _resolve_seed_texts(request: GenerationRequest) -> list[str]:

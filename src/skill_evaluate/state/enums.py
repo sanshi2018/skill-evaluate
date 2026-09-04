@@ -15,10 +15,26 @@ class ExecutorBackendType(StrEnum):
 
 
 class TestCaseCategory(StrEnum):
+    """用例类别。
+
+    docs/dev/13 追加了最后两项（渐进式披露**动态**探查用例）。它们与
+    `ProgressiveDisclosureStaticOutput`（模块二的静态审查）测的不是一回事：
+    静态版只看 SKILL.md 里"触发条件写没写清楚"，动态版真的把任务跑一遍，看
+    Agent 到底有没有按条件去读 `references/` 下的文件。因此它们必须是独立的
+    用例类别——把它们混进 POSITIVE 会被模块一的触发率规则按"该不该加载 Skill"
+    误判（它们测的是"该不该加载**参考文件**"）。
+    """
+
     POSITIVE = "positive"  # 正向触发用例 (should-trigger)
     NEGATIVE = "negative"  # 反向近脱靶用例 (should-not-trigger)
     ADVERSARIAL = "adversarial"  # 模块五：红队攻击用例
     MULTI_SKILL = "multi_skill"  # 模块十：多技能并发用例
+    # 模块三（docs/dev/13）：场景精确匹配某个 references/ 文件的触发条件，
+    # 期望 Agent 在执行中读取该文件；没读 = 渐进式遗漏（严重问题）。
+    PROGRESSIVE_DISCLOSURE_TRIGGER = "progressive_disclosure_trigger"
+    # 模块三：完全在常规范围内的任务，**不该**触发任何额外参考文件读取；
+    # 读了 = 过度抓取（效率问题，非严重）。
+    PROGRESSIVE_DISCLOSURE_REGULAR = "progressive_disclosure_regular"
 
 
 class DatasetSplit(StrEnum):

@@ -7,6 +7,25 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+# --------------------------------------------------------------------------- #
+# run_index 命名空间分配表（docs/dev/13 落地时新增的全局约定）
+# --------------------------------------------------------------------------- #
+# `execution_traces` 的唯一键是 `(case_id, run_index)`（docs/dev/04 第 3 节），
+# 而**同一条用例会被多个维度反复执行**：模块一对每条 POSITIVE 用例跑 3 次冗余，
+# 模块三又拿同一批用例跑 A/B 两条分支。若各维度都从 0 开始编号，后跑的维度会
+# 静默覆盖先跑的维度的 Trace，并且互相污染判定输入——模块一按 `list_by_case()`
+# 统计触发率时，会把模块三那条"故意不加载 Skill"的基线分支也算成一次"没触发"，
+# 于是一份完全正常的 Skill 会在下一次运行里莫名其妙地触发率不达标。
+#
+# 因此 run_index 是一张**全局分配表**：各维度在自己的号段内编号，0~99 留给
+# "同一维度内的冗余执行"，100 起是各维度的专用号段。新维度要落 Trace 时在此
+# 申领一个号，不要就地写字面量。
+RUN_INDEX_REDUNDANT_BASE = 0  # 模块一（docs/dev/11）：0 .. redundant_runs-1
+RUN_INDEX_DIMENSION_BASE = 100  # 100 起为各维度专用号段的起点
+RUN_INDEX_AB_LOADED = 100  # 模块三（docs/dev/13）：A/B 对比的"加载 Skill"分支
+RUN_INDEX_AB_BASELINE = 101  # 模块三：A/B 对比的基线分支（不加载 Skill）
+RUN_INDEX_PD_PROBE = 110  # 模块三：渐进式披露动态探查（用例类别本身就是独占的）
+
 
 class TimingCostMetrics(BaseModel):
     total_tokens: int

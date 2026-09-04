@@ -79,6 +79,31 @@ class ControlCalibrationOutput(BaseReviewOutput):
     has_checklist_or_plan_verify_loop: bool
 
 
+class RoiComparisonOutput(BaseReviewOutput):
+    """A/B 增值对比（模块三 / docs/dev/13 第 4.2 节）。
+
+    `verdict` 的语义在本模板里是**反过来读**的：`pass` = 加载 Skill 有显著增值，
+    `fail` = 没有附加价值、该 Skill 应被打回重构。这是架构文档模块三"ROI 判定"
+    的原话，不是笔误。
+    """
+
+    quality_delta_significant: bool  # 产出质量是否有肉眼可见的差距
+    efficiency_delta_significant: bool  # 步数/耗时/Token 是否有肉眼可见的差距
+
+
+class TraceEfficiencyOutput(BaseReviewOutput):
+    """执行轨迹效率损耗诊断（模块三 / docs/dev/13 第 5 节）。
+
+    三个布尔项一一对应架构文档模块三点名的三种效率损耗，**不合并成一个
+    `efficiency_issue` 枚举**：三者可以同时发生，合并后报告里就只剩一个最"像"的
+    结论，读的人无从知道另外两条有没有出现。
+    """
+
+    thrashing_detected: bool  # 指令模糊导致反复试不同命令
+    blind_execution_detected: bool  # 指令不适用于当前情形却仍照做
+    decision_paralysis_detected: bool  # 等价选项太多导致反复权衡/来回换方案
+
+
 __all__ = [
     "BaseReviewOutput",
     "ConstructiveErrorOutput",
@@ -87,6 +112,8 @@ __all__ = [
     "LinguisticSmellOutput",
     "OmissionAuditOutput",
     "ProgressiveDisclosureStaticOutput",
+    "RoiComparisonOutput",
     "ScopingCheckOutput",
+    "TraceEfficiencyOutput",
     "Verdict",
 ]

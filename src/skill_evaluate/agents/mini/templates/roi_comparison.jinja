@@ -1,0 +1,58 @@
+{% import "_prefix.jinja" as prefix %}
+你正在评估一份 Agent Skill 的**投资回报率（ROI）**：同一个任务，分别交给
+"加载了这份 Skill 的智能体"和"完全没有这份 Skill 的基线智能体"各跑一遍，你要
+判断加载它到底有没有带来实质性的增益。
+
+## 任务：A/B 增值对比
+
+### 判断依据
+
+分别看两件事，各自给一个布尔结论：
+
+- `quality_delta_significant`：**产出质量**是否有实质差距？看的是最终答复是否更
+  准确、更完整、更贴合这类任务的专业惯例（例如遵守了领域约定的格式、处理了基线
+  漏掉的边界情况）。措辞更漂亮、篇幅更长**不算**质量差距。
+- `efficiency_delta_significant`：**执行效率**是否有实质差距？看步数、耗时、Token
+  三者的整体走向。注意方向：加载 Skill 后**步数更少、更早收敛**才是增益；如果它
+  反而绕了更多路，那是负增益，这一项填 false 并在 reasoning 里点明。
+
+### verdict 的取值（**注意方向**）
+
+- `pass`：至少一项有实质增益 —— 这份 Skill 提供了附加价值。
+- `fail`：两项都没有实质差距 —— 这份 Skill 没有提供附加价值，应当打回重构。
+
+这个判定会直接影响"要不要打回重构"，因此**证据不足时判 pass**（见通用规则第 2
+条）：把一份其实有用的 Skill 判成没价值，代价远大于放过一份可疑的。
+
+### 不要被这些迷惑
+
+- 两边最终都完成了任务，不等于没有增益——要看**过程**是不是差很多。
+- 基线那边发挥失常（跑崩了、答非所问）不等于 Skill 有增益，那可能只是一次随机
+  波动。**本次 A/B 每条分支只跑了一次**，请把单次执行的偶然性算进你的判断，
+  差距不够明显时判 pass 并在 reasoning 里如实写明你的保留意见。
+
+{{ prefix.common_rules() }}
+
+## 任务提示词
+
+{{ prompt }}
+
+## A 组：加载了该 Skill
+
+- 动作步数：{{ loaded_actions_count }}
+- 耗时（ms）：{{ loaded_duration_ms }}
+- 总 Token：{{ loaded_total_tokens }}
+
+最终答复：
+
+{{ loaded_final_response }}
+
+## B 组：基线（未加载该 Skill）
+
+- 动作步数：{{ baseline_actions_count }}
+- 耗时（ms）：{{ baseline_duration_ms }}
+- 总 Token：{{ baseline_total_tokens }}
+
+最终答复：
+
+{{ baseline_final_response }}

@@ -27,7 +27,7 @@ from skill_evaluate.agents.generator.schema import CapabilityFocus, GenerationRe
 from skill_evaluate.errors import GenerationError
 from skill_evaluate.logging import get_logger
 from skill_evaluate.persistence.repository import TestCaseRepository, TestSuiteRepository
-from skill_evaluate.state.enums import DatasetSplit, GenerationMode
+from skill_evaluate.state.enums import DatasetSplit, GenerationMode, TestCaseCategory
 from skill_evaluate.state.skill import SkillDefinition
 from skill_evaluate.state.test_case import TestCase, TestSuiteVersion
 
@@ -71,10 +71,33 @@ class TestSuiteService:
     # 4.1 REUSE（默认）
     # ------------------------------------------------------------------ #
 
-    async def ensure_test_suite(self, skill: SkillDefinition) -> EnsureTestSuiteResult:
-        """流水线默认入口：能复用就复用，从未生成过才首次生成。"""
+    async def ensure_test_suite(
+        self,
+        skill: SkillDefinition,
+        *,
+        extra_categories: list[TestCaseCategory] | None = None,
+        category_counts: dict[TestCaseCategory, int] | None = None,
+    ) -> EnsureTestSuiteResult:
+        """流水线默认入口：能复用就复用，从未生成过才首次生成。
+
+        `extra_categories`（docs/dev/13 追加）用于"本维度需要一批**别的维度不需要**
+        的用例"这种场景（模块三的渐进式披露动态探查用例就是第一例）。语义仍然是
+        **REUSE**：只有当现有 active 用例集里一条这些类别的用例都没有时，才补生成
+        这些类别——**且只生成这些类别**，已有的正/反向用例原样继承，`split` 归属不
+        被打乱。为什么不让各维度自己去调 `force_regenerate()`：那会把整套题重出一
+        遍，"这次改动到底影响了什么"就再也归因不了（docs/dev/06 第 4.1 节）。
+
+        `category_counts` 是逐类别的条数覆盖，透传给 `GenerationRequest`；模块三按
+        "每个参考文件各出一条触发探查题"算出条数，只有调用方算得出来。
+        """
+        extras = list(extra_categories or [])
         existing = await self._suite_repo.get_active_version(skill.skill_id, skill.version_ref)
         if existing is not None:
+            topped_up = await self._ensure_extra_categories(
+                skill, existing, extras, category_counts
+            )
+            if topped_up is not None:
+                return EnsureTestSuiteResult(suite_version=topped_up, generated=True)
             logger.info(
                 "test_suite_reused",
                 skill_id=skill.skill_id,
@@ -101,13 +124,89 @@ class TestSuiteService:
                 active_version_ref=stale.skill_version_ref,
                 current_ref=skill.version_ref,
             )
-            return EnsureTestSuiteResult(suite_version=stale, staleness_warning=warning)
+            # 版本漂移时仍然要补齐缺失的类别：一份 2024 年生成的用例集里当然不会有
+            # docs/dev/13 才引入的探查用例，那不是"漂移"而是"这个维度从没出过题"。
+            # 补生成挂在漂移的那一版上，staleness 告警照样带出去。
+            topped_up = await self._ensure_extra_categories(skill, stale, extras, category_counts)
+            return EnsureTestSuiteResult(
+                suite_version=topped_up or stale,
+                staleness_warning=warning,
+                generated=topped_up is not None,
+            )
 
         logger.info("test_suite_bootstrap", skill_id=skill.skill_id)
         version = await self._generate_and_activate(
-            GenerationRequest(skill=skill, mode=GenerationMode.REUSE, triggered_by="auto_bootstrap")
+            GenerationRequest(
+                skill=skill,
+                mode=GenerationMode.REUSE,
+                categories=[
+                    TestCaseCategory.POSITIVE,
+                    TestCaseCategory.NEGATIVE,
+                    *extras,
+                ],
+                category_counts=dict(category_counts or {}),
+                triggered_by="auto_bootstrap",
+            )
         )
         return EnsureTestSuiteResult(suite_version=version, generated=True)
+
+    async def _ensure_extra_categories(
+        self,
+        skill: SkillDefinition,
+        current: TestSuiteVersion,
+        extra_categories: list[TestCaseCategory],
+        category_counts: dict[TestCaseCategory, int] | None,
+    ) -> TestSuiteVersion | None:
+        """补齐现有用例集里**一条都没有**的额外类别，返回新版本；无需补齐时返回 None。
+
+        判定口径是"该类别一条都没有"，而不是"条数够不够"：条数够不够是个没有客观
+        答案的问题（几条算够？），把它做成自动触发条件，等于给流水线开了一个每次
+        运行都可能悄悄再出一批题的口子。要加题请显式走
+        `force_regenerate()` / `incremental_patch()`。
+        """
+        if not extra_categories:
+            return None
+        present = await self._case_repo.list_by_categories(
+            current.suite_version_id, extra_categories
+        )
+        missing = sorted(
+            set(extra_categories) - {case.category for case in present}, key=lambda c: c.value
+        )
+        if not missing:
+            return None
+
+        logger.info(
+            "test_suite_extra_categories_generating",
+            skill_id=skill.skill_id,
+            suite_version_id=current.suite_version_id,
+            missing_categories=[c.value for c in missing],
+        )
+        counts = {c: (category_counts or {}).get(c, 0) for c in missing}
+        if all(count <= 0 for count in counts.values()):
+            # 调用方算出来"这个 Skill 一条这类题都出不了"（例如它根本没有
+            # references/ 目录，就没有渐进式披露可探）。这不是错误，直接返回 None
+            # 让调用方按"没有用例"处理，而不是发一次注定出 0 条的 LLM 请求。
+            logger.info(
+                "test_suite_extra_categories_skipped",
+                skill_id=skill.skill_id,
+                reason="requested_count_is_zero",
+                missing_categories=[c.value for c in missing],
+            )
+            return None
+        return await self._generate_and_activate(
+            GenerationRequest(
+                skill=skill,
+                mode=GenerationMode.INCREMENTAL_PATCH,
+                categories=missing,
+                # 只生成缺的那些类别：把 positive/negative 归零，避免顺手重出一套
+                # 正反向题（那就等于变相的 force_regenerate）。
+                positive_count=0,
+                negative_count=0,
+                category_counts=counts,
+                triggered_by="dimension_extra_categories",
+            ),
+            inherited_case_ids=current.case_ids,
+        )
 
     # ------------------------------------------------------------------ #
     # 4.2 FORCE_REGENERATE

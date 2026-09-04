@@ -485,6 +485,25 @@ class JudgeCasesTests:
         assert update[KEY_VALIDATION_FAILED_CASE_IDS] == ["c-val"]
         assert KEY_TRAIN_FAILED_CASE_IDS not in update
 
+    async def test_其他维度的Trace不参与触发率统计(self) -> None:
+        """模块三（docs/dev/13）拿同一批用例跑 A/B，基线分支按定义就是"没加载 Skill"。
+
+        那些 Trace 落在 100 起的专用号段里（`state/trace.py` 的 run_index 分配表）。
+        不筛掉的话，一份 3 次里触发 2 次（本该通过）的 Skill 会被算成 5 次里触发
+        2 次，触发率 0.4 < 0.5，莫名其妙地判成不达标。
+        """
+        cases = [_case("c-pos")]
+        pipeline, doubles = _pipeline(cases, loaded_by_case={"c-pos": [True, True, False]})
+        state = _state(**{KEY_TRAIN_CASE_IDS: ["c-pos"]})
+        await pipeline.execute_train_cases(state)
+        # 模拟模块三留下的两条 A/B Trace（那次两条分支都没加载成功）。
+        await doubles["traces"].save(_trace("c-pos", 100, loaded=False))
+        await doubles["traces"].save(_trace("c-pos", 101, loaded=False))
+
+        update = await pipeline.judge_train_cases(state)
+
+        assert update[KEY_TRAIN_FAILED_CASE_IDS] == []
+
 
 class RoutingTests:
     def test_有训练集失败才进优化闭环(self) -> None:
