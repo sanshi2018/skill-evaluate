@@ -69,6 +69,10 @@ class LLMSettings(BaseSettings):
     # Validator Agent（docs/dev/10）生成校验脚本的模型。脚本的 exit_code 会被当作
     # 比 LLM 裁决更可靠的"确定性证据"，写错了比没有更糟，因此同样走高档模型。
     validator_model: str = "anthropic/claude-sonnet-5"
+    # Analyzer Agent（docs/dev/16）拆解能力树与做用例-能力映射的模型。走高档模型
+    # 而不是廉价的 mini 档：能力树是模块六/七/八三份文档共同的分析基座，拆错一项
+    # 会一路传染到覆盖率、瘦身与加权算法，而重跑的代价是整条补盲回环。
+    analyzer_model: str = "anthropic/claude-sonnet-5"
     # OpenRouter 的 Key（`sk-or-v1-...`）。同时接受裸 `OPENROUTER_API_KEY`，方便与
     # 其他工具共用同一个环境变量。
     api_key: SecretStr = Field(
@@ -253,6 +257,41 @@ class SecuritySettings(BaseSettings):
     evidence_max_chars: int = 2000
 
 
+class CoverageSettings(BaseSettings):
+    """模块六/七/八（docs/dev/16~18）：能力覆盖率分析的参数。
+
+    本组配置全部围绕架构文档给模块六列出的那条**缺点**展开——"能力粒度极其依赖
+    LLM 的主观判断，拆得过细会导致覆盖率永远无法达标，引发无限重试死锁"。三个
+    旋钮分别对应它的三道闸门：拆太细就交人确认（`capability_count_review_threshold`）、
+    达标线可调（`min_coverage_ratio`）、补盲次数有硬上限（`max_patch_iterations`）。
+
+    这里**没有**"自动放宽阈值直到通过"这类旋钮，这是刻意的：覆盖率不达标时正确的
+    动作是把事实写进报告交给人判断（是能力树切太细还是测试集真的不足），而不是让
+    机器自己把及格线降到刚好能过。
+    """
+
+    model_config = SettingsConfigDict(env_prefix="SKILLEVAL_COVERAGE_")
+
+    # 能力节点数超过它就挂起等人工确认（docs/dev/16 第 4 节，架构文档"人工审核卡片"
+    # 的应对方案）。默认 20：一份 500 行以内的 SKILL.md 若被拆出 20 项以上的原子
+    # 能力，多半是 Analyzer 把"步骤"当成了"能力"，此时继续算覆盖率只会得到一个
+    # 永远补不满的盲区清单。
+    capability_count_review_threshold: int = 20
+
+    # 覆盖率达标线（架构文档模块六第 3 节的 ">= 90%"）。
+    min_coverage_ratio: float = 0.9
+
+    # 反向补盲的最大回环次数（docs/dev/16 第 7 节）。达到上限仍未达标就如实报告
+    # "覆盖率未达阈值"，不再回环——宁可把问题暴露给人，也不让机器在不确定的情况
+    # 下自我循环空转。
+    max_patch_iterations: int = 3
+
+    # `map_case_coverage` 同时在飞的映射请求数。每条正向用例一次 LLM 调用，几十条
+    # 用例全量并发打出去会撞上供应商限速；口径与 `ExecutorSettings.max_concurrent_sandboxes`
+    # 一致（评测系统自身的资源节流），但这里限的是 LLM 请求而非沙箱，因此单列一项。
+    max_concurrent_mappings: int = 10
+
+
 class JudgeSettings(BaseSettings):
     """Judge Agent 的可信度机制参数（docs/dev/08）。
 
@@ -351,6 +390,7 @@ class Settings(BaseSettings):
     )
     script_usability: ScriptUsabilitySettings = Field(default_factory=ScriptUsabilitySettings)
     security: SecuritySettings = Field(default_factory=SecuritySettings)
+    coverage: CoverageSettings = Field(default_factory=CoverageSettings)
     judge: JudgeSettings = Field(default_factory=JudgeSettings)
     optimizer: OptimizerSettings = Field(default_factory=OptimizerSettings)
     validator: ValidatorSettings = Field(default_factory=ValidatorSettings)

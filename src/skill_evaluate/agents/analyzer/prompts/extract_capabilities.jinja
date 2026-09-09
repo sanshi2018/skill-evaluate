@@ -1,0 +1,84 @@
+你在为一份 Agent Skill 拆解**声明能力清单**。你的产出会被当作这份 Skill "承诺
+了什么"的权威清单，用来衡量现有测试用例究竟测到了其中多少项。
+
+## 被测 Skill
+
+- skill_id: {{ skill.skill_id }}
+- version_ref: {{ skill.version_ref }}
+
+### description 字段原文
+
+{{ skill.description }}
+
+### SKILL.md 正文
+
+{{ skill.body_markdown }}
+{% if skill.scripts %}
+
+### 附带脚本
+
+{% for script in skill.scripts %}
+- {{ script.path }}
+{% endfor %}
+{% endif %}
+{% if skill.reference_files %}
+
+### 参考资料文件
+
+{% for ref in skill.reference_files %}
+- {{ ref.path }}{% if ref.trigger_condition %}（触发条件：{{ ref.trigger_condition }}）{% endif %}
+
+{% endfor %}
+{% endif %}
+
+## 什么算一项"原子能力"
+
+一项原子能力是**用户可以单独提出、并且可以单独验证成败**的一件事。判断标准：
+能不能写出一条只针对它的用户提问，并据此判断这份 Skill 做到了没有。
+
+正面例子（假设是一个数据处理 Skill）：
+
+- 支持读取 CSV 文件
+- 支持读取 Excel 文件
+- 支持处理缺失值
+- 支持输出数据透视表
+
+## 三条硬性约束
+
+### 1. 只抽"声明过的"，不抽"推测能做的"
+
+每一项都必须能在上面的 description 或正文里找到出处，并逐字摘一句原文填进
+`evidence_quote`。找不到出处的能力**不要写**——凭想象补上去的能力会被当作零覆盖
+盲区，逼着系统去为一件这份 Skill 从没承诺过的事情出题。
+
+### 2. 不要把"执行步骤"拆成"能力"
+
+正文里的操作步骤（"先读取文件 → 再校验表头 → 最后写出"）是**一项**能力的内部
+流程，不是三项能力。判据仍然是上面那条：用户不会单独提出"帮我校验表头"这个
+诉求，它也无法脱离整个任务单独验证。
+
+拆得过细的直接后果是覆盖率永远无法达标，流水线陷入无意义的补题循环。
+
+### 3. 不要把同一件事换个说法写两遍
+
+"支持 CSV 输入"与"可以读取逗号分隔文件"是同一项能力。语义重复的条目会被系统
+按描述哈希合并，多写只是浪费。
+
+## 粒度参考
+
+大多数 Skill 的原子能力在 5~15 项之间。超过 {{ review_threshold }} 项会触发人工
+审核卡片——这不是禁止，但如果你正打算写出 {{ review_threshold }} 项以上，请先
+回头确认自己没有在拆执行步骤。
+
+## 输出格式
+
+只输出一个 JSON 对象，形如：
+
+{"capabilities": [{"description": "支持读取 Excel 文件", "evidence_quote": "本工具接受 .csv 与 .xlsx 两种输入"}]}
+
+要求：
+
+- `description` 用一句话陈述"这份 Skill 能做什么"，不要写成测试步骤或验收标准。
+- `evidence_quote` 必须是上面原文里**真实存在**的片段，逐字摘录，不要复述、不要
+  拼接不相邻的两句话。
+- 不要输出 JSON 之外的任何文字。

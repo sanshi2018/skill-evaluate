@@ -44,6 +44,16 @@ version = await TestSuiteService().incremental_patch(
 )
 ```
 
+> ✅ **`16` 已落地，是本方法的首个真实调用方**，实现见
+> `nodes/coverage/nodes.py::CoveragePipeline.feedback_driven_generation`。两条经验：
+>
+> - `descriptions` 的"必填"是字面意义上的。模块六的 `capability_id` 是**描述文本的
+>   哈希**（`agents/analyzer/identity.py`），不填描述时 Prompt 里出现的是
+>   `csv-cleaner:cap-3f9ac21b0d47` 这样一串东西，补出来的题必然补不到盲区。
+> - **调用方要接住 `GenerationError`**。"这个 Skill 还没有任何 active 用例集"会走到
+>   这条异常上，而覆盖率维度不阻断合并，为一次补题失败掀掉整条流水线不成比例。
+>   模块六的处理是标记补盲耗尽 + 把原因写进报告 findings。
+
 补生成数量默认按 focus 内容规模动态决定（每个能力/组合各一条正向、每个负向
 约束一条反向），不固定 8-10。确有把握时可用 `positive_count` / `negative_count`
 覆盖。
