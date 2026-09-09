@@ -72,6 +72,12 @@ class ProbeFinding(BaseModel):
 
     case_id: str
     trace_id: str
+    # PREFIX_BY_KIND = {
+    #     KIND_MISSING_READ: "[漏读]",
+    #     KIND_OVER_FETCH: "[过度抓取]",
+    #     KIND_TOKEN_WATERMARK: "[Token水位]",
+    #     KIND_NO_PROBE_TARGET: "[探查目标缺失]",
+    # }
     kind: str
     severe: bool
     message: str
