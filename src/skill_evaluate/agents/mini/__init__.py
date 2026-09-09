@@ -25,6 +25,9 @@ from skill_evaluate.agents.mini.templates import builtin as _builtin  # noqa: F4
 from skill_evaluate.agents.mini.templates import (  # noqa: F401  # 注册副作用
     instruction_control as _instruction_control,
 )
+from skill_evaluate.agents.mini.templates import (  # noqa: F401  # 注册副作用
+    security as _security,
+)
 from skill_evaluate.agents.mini.templates.registry import (
     REVIEW_TEMPLATE_REGISTRY,
     ReviewTemplate,

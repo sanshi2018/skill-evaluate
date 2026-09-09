@@ -165,14 +165,35 @@ skill-evaluate sync-toolbox        # 跑评测之前执行，不要在评测中�
 **没有工具箱也能跑**：`available=False` 时全部走 `generated_from_scratch`，只是
 每条断言都要花一次 LLM 调用，且缺少"被复用过很多次的模板"这层质量兜底。
 
-### `15` 还要做的两件事
+### `15` 的两件事已完成 ✅
 
-1. `sql_no_injection_validator.py` / `html_no_xss_validator.py` 目前只是清单占位。
-   接入 Semgrep 或等价 SAST 工具，在脚本内部调其 CLI，并把它的退出码**翻译**成
-   本项目的约定（发现高危 -> `exit 1`，无发现 -> `exit 0`；工具自身报错也要
-   非 0 并在 stderr 说明，不能因为"扫描器崩了"而误判为安全）。
-2. 这两个模板是纯 `.py`（非 `.jinja`），`render()` 会原样返回，参数化靠脚本自己的
-   CLI 参数/环境变量——`params` 留空即可，这样它们能走零 LLM 的 `template_lookup`。
+产物在**本仓库根目录** `assertion_toolbox/`（含 `README.md`，写明了 `manifest.yaml`
+要追加的两条记录）：
+
+```
+assertion_toolbox/templates/sql_no_injection_validator.py
+assertion_toolbox/templates/html_no_xss_validator.py
+```
+
+**运维侧还需要做一步**：把这两个文件复制进外部的
+`skill-evaluate-assertion-toolbox` 仓库的 `templates/`，并按 README 里的片段追加
+`manifest.yaml` 记录（`params: []`，纯 `.py` 非 `.jinja`，`render()` 原样返回，
+因此能走零 LLM 的 `template_lookup`）。
+
+两个脚本的关键设计：
+
+- **两级扫描**：Semgrep（装了才跑，`p/sql-injection` / `p/xss`，可用
+  `SKILLEVAL_SEMGREP_SQL_CONFIG` / `SKILLEVAL_SEMGREP_XSS_CONFIG` 指向本地规则）
+  + 内置正则（永远跑）。Semgrep 不在 PATH 或规则包拉不下来（模块五强制无出站网络
+  的沙箱里这是常态）时**不判扫描失败**，只记一条 info 继续用内置规则。
+- **退出码**：`0` 通过 / `1` 发现高危 / `2` **扫描器本身出错**（没有可扫的产物、
+  读不了文件）。`AssertionResult.passed` 只认 `exit_code == 0`，1 与 2 都算失败——
+  分开只是为了让人一眼看出"发现了问题"和"没扫成"不是一回事。
+- **没扫成绝不算通过**：一个因为"扫描器崩了"而被判成安全的产物，比一个明确被判失败
+  的产物危险得多——后者会被人看到，前者不会。`15` 的判定侧同样贯彻这条：断言没跑成
+  时判 `NEEDS_HUMAN_REVIEW` 而不是 PASS。
+- **XSS 那份只认未转义的载荷**：一份把 `&lt;script&gt;` 原样打印出来的报告是安全的
+  ——那正是转义生效的样子。
 
 ---
 

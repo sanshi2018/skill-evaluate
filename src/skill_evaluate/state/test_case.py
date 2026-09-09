@@ -6,7 +6,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
-from skill_evaluate.state.enums import DatasetSplit, TestCaseCategory
+from skill_evaluate.state.enums import AttackSubtype, DatasetSplit, TestCaseCategory
 
 
 class TestCase(BaseModel):
@@ -27,6 +27,13 @@ class TestCase(BaseModel):
     # 文件"会把生成阶段的确定信息重新变成一次不可靠的推断。
     # 其余类别的用例恒为 None。
     probe_target_reference: str | None = None
+    # 模块五（docs/dev/15 第 2 节）新增：这条 ADVERSARIAL 用例具体在打哪个攻击面。
+    # 六类探测节点按它挑自己该跑的用例子集，判定方式也随之不同（注入看语义、
+    # 穿越看路径、DoS 看超时）。为什么落在用例上而不是执行时再推断：出题时
+    # Attacker Agent 是知道自己在构造哪类攻击的，事后靠关键词去猜等于把一个
+    # 确定的事实重新变成一次不可靠的推断（与 probe_target_reference 同一条理由）。
+    # 其余类别的用例恒为 None。
+    attack_subtype: AttackSubtype | None = None
     generator_run_id: str  # 由哪一次 Generator 生成，供缓存复用判定
     created_at: datetime
 

@@ -194,16 +194,22 @@ def _dict_list(state: InstructionControlState, key: str) -> list[dict[str, objec
     return list(value or [])
 
 
-def _ab_run_index(*, run_index: int, baseline: bool) -> int:
+def _ab_run_index(*, run_index: int, baseline: bool, base: int = RUN_INDEX_AB_LOADED) -> int:
     """A/B 分支的 `run_index`。
 
     `execution_traces` 的唯一键是 `(case_id, run_index)`，而本维度跑的是**模块一
     用过的同一批用例**。两个维度都从 0 开始编号的话，后跑的会静默覆盖先跑的，
     并且模块一下次统计触发率时会把这里的基线分支（按定义就是"没加载 Skill"）
     算成一次没触发。号段分配表见 `state/trace.py`。
+
+    `base`（docs/dev/15 追加）让**复用方**换一个起始号段。默认值就是本维度自己的
+    号段，因此本维度的行为一个字都没变。加它的理由与模块一 `run_cases()` 的
+    `run_index_base` 完全相同：模块五的强制功能回归要拿打了安全补丁的 skill 重跑
+    一遍 A/B，不换号段就会把本维度本次运行的真实结果覆盖掉。
+    加号排列仍是"加载/基线交错"（base、base+1、base+2、base+3…），所以基线号 =
+    base + 1，调用方给的 base 之后必须留出 `2 × run_count` 的空间。
     """
-    offset = RUN_INDEX_AB_BASELINE - RUN_INDEX_AB_LOADED if baseline else 0
-    return RUN_INDEX_AB_LOADED + 2 * run_index + offset
+    return base + 2 * run_index + (1 if baseline else 0)
 
 
 class InstructionControlPipeline:
@@ -372,8 +378,43 @@ class InstructionControlPipeline:
             KEY_ROI_OUTCOMES: [o.model_dump() for o in outcomes],
         }
 
+    async def run_ab_pairs(
+        self,
+        run_id: str,
+        skill: SkillDefinition,
+        cases: Sequence[TestCase],
+        *,
+        run_index_base: int = RUN_INDEX_AB_LOADED,
+    ) -> list[tuple[TestCase, list[ExecutionTrace], list[ExecutionTrace]]]:
+        """A/B 执行骨架的**公开**入口（docs/dev/15 第 11.2 节要求的可复用形态）。
+
+        docs/dev/15 对本维度提了一条实现约束："判定核心逻辑应可脱离图节点上下文
+        单独调用"——模块五的强制功能回归要拿一个打了安全补丁的 skill 重跑 A/B，
+        它拿不到也不该拿本维度的 `InstructionControlState`。因此执行骨架
+        （本方法）与 ROI 判定（`judge_roi()`）都以不吃 state 的公开方法存在，
+        图节点只是它们的一层薄包装。
+
+        `run_index_base` 见 `_ab_run_index()`：复用方必须换号段，否则会覆盖本维度
+        本次运行的 Trace。
+        """
+        return await self._run_ab(run_id, skill, cases, run_index_base=run_index_base)
+
+    async def judge_roi(
+        self,
+        case: TestCase,
+        loaded: Sequence[ExecutionTrace],
+        baseline: Sequence[ExecutionTrace],
+    ) -> JudgmentOutcome:
+        """ROI 判定的**公开**入口，理由同 `run_ab_pairs()`。行为与 `_judge_roi()` 一致。"""
+        return await self._judge_roi(case, loaded, baseline)
+
     async def _run_ab(
-        self, run_id: str, skill: SkillDefinition, cases: Sequence[TestCase]
+        self,
+        run_id: str,
+        skill: SkillDefinition,
+        cases: Sequence[TestCase],
+        *,
+        run_index_base: int = RUN_INDEX_AB_LOADED,
     ) -> list[tuple[TestCase, list[ExecutionTrace], list[ExecutionTrace]]]:
         """对每条用例并发跑"加载/基线"两条分支，返回 (用例, 加载侧 Traces, 基线侧 Traces)。
 
@@ -388,7 +429,9 @@ class InstructionControlPipeline:
             request = ExecutionRequest(
                 skill=skill,
                 case=case,
-                run_index=_ab_run_index(run_index=index, baseline=baseline),
+                run_index=_ab_run_index(
+                    run_index=index, baseline=baseline, base=run_index_base
+                ),
                 run_id=run_id,
                 # 唯一的自变量。`load_skill=False` 就是架构文档要的"完全不加载该
                 # Skill 的基线环境"（`ExecutionRequest` 从 docs/dev/03 起就为本维度

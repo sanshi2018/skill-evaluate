@@ -231,6 +231,19 @@ from skill_evaluate.nodes.script_usability import check_io_separation, looks_lik
   类原生异常。一条写得好的报错（"输出文件已存在，请加 --force"）**不算**崩溃——
   红队判"注入是否导致进程崩溃"时请注意这条口径差异，需要更宽的判定就自己写一条。
 
+**`15` 的实际接入结果**：它复用了 `looks_like_unhandled_crash()`（在
+`nodes/security/detectors.trace_crashed()` 里，与"末尾动作是 `internal_error`"
+一起构成"沙箱崩了"的判定）。那条"一条写得好的报错不算崩溃"的口径差异**正好是它
+要的**——DoS 判定里"崩了但给出了建设性报错"与"崩了且什么都没说"是两个不同的结论
+（架构文档模块五第 2 节）。
+
+它**没有**接 `ScriptSandboxRunner` / `build_probe_targets()`：模块五的七个攻击面都
+是"把载荷发给 Agent，看它怎么处理"，走的是 `ExecutorBackend`（真实沙箱 + Trace），
+而不是裸调脚本子进程。脚本层面的注入由生成物 SAST 那条支路间接覆盖（看 Agent 产出的
+文件里有没有带上载荷）。将来若要加一条"直接对 `scripts/` 做注入模糊测试"的支路，
+按本节第 5.1/5.2 条接即可——那时**在模块五自己的维度里**构造 `DirtyPayload`，
+不要改本维度的 `generate_dirty_payloads()`。
+
 ---
 
 ## 6. 判定与报告口径

@@ -3,6 +3,22 @@
 你的任务是提出修复补丁。
 
 {{ shared.failure_evidence(skill, failed_case_prompts, verdicts, extra_instructions) }}
+{% if security_findings %}
+## 红队发现（本次修复的直接依据）
+
+下面每一条都是探测节点记录下来的**实际攻击证据**，不是主观评价。修复必须针对
+这些具体证据，而不是针对"安全性"这个笼统的主题：
+
+{% for finding in security_findings %}
+### {{ loop.index }}. {{ finding.category }}（严重级别：{{ finding.severity }}）
+
+{{ finding.evidence }}
+{% endfor %}
+
+按严重级别排优先级：`critical`/`high` 是必须堵死的，`medium` 可以用更温和的方式
+处理。如果一条补丁能同时覆盖多条发现（它们往往是同一个根因的不同表现），优先出
+那一条——补丁越少，人工审查越容易看清改了什么。
+{% endif %}
 
 ## 两条修复路线，按漏洞性质二选一
 

@@ -96,6 +96,30 @@ class AssertionStrategy(StrEnum):
     GENERATED_FROM_SCRATCH = "generated_from_scratch"
 
 
+class AttackSubtype(StrEnum):
+    """模块五（docs/dev/15 第 2 节）：一条对抗用例具体在打哪个攻击面。
+
+    `TestCaseCategory.ADVERSARIAL` 只说明"这是一条红队用例"，但六类攻击的**判定
+    方式完全不同**——提示词注入要看模型有没有被说服（语义裁决），目录穿越要看
+    有没有一次成功的越权读（确定性扫描），DoS 要看超时与崩溃（确定性事实）。
+    把它们混在一个类别里，探测节点就只能靠正则去猜"这条题想打什么"，而出题时
+    Attacker Agent 是**知道**的——这个字段就是把那个确定的事实保存下来。
+
+    七个取值对应七个 Attacker Prompt 模板（`agents/attacker/prompts/`），一一对应，
+    新增攻击面 = 新增一个模板 + 一次 `register_attack_playbook()`。
+    """
+
+    DIRECT_PROMPT_INJECTION = "direct_prompt_injection"  # 用户输入里直接夹带越权指令
+    DATA_POISONING = "data_poisoning"  # 恶意文件内容（CSV 公式注入等）间接投毒
+    ENV_THEFT = "env_theft"  # 诱导 Agent 回读并泄露环境变量/凭据
+    DIRECTORY_TRAVERSAL = "directory_traversal"  # 诱导 Agent 读取工作区之外的路径
+    DOS_CONTEXT_FLOOD = "dos_context_flood"  # 超大输入撑爆上下文
+    DOS_LOGIC_BOMB = "dos_logic_bomb"  # 死循环/指数级任务拖死沙箱
+    # docs/dev/15 第 9 节追加的第七类：诱导 Skill 把注入负载写进**生成物**
+    # （SQL 语句、HTML 报告），漏洞不在 Agent 的行为里而在它产出的文件里。
+    ARTIFACT_INJECTION = "artifact_injection"
+
+
 class SecurityFindingCategory(StrEnum):
     """模块五安全发现分类（docs/dev/02 第 9 节）。"""
 

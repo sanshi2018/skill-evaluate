@@ -177,11 +177,30 @@ def executable_assertion_specs(specs: list[AssertionSpec]) -> list[AssertionSpec
     return [spec for spec in specs if spec.is_executable]
 
 
-def build_failure_trace(*, case_id: str, run_index: int, reason: str) -> ExecutionTrace:
+# 失败态 Trace 末尾那条动作的 `action_type`（docs/dev/15 第 8 节补充的约定）。
+#
+# 为什么要把"超时"与"其他故障"分成两个取值：模块五的 DoS 判定里，**超时即通过**
+# ——墙钟约束把攻击挡住了，这正是我们期望的结果；而沙箱崩溃且没给出建设性报错是
+# 不通过。两者都记成 `internal_error` 的话，这两个方向相反的结论就区分不出来，
+# 一次成功的防御会被读成一次失守。
+#
+# 其余维度对这两个值一视同仁（都是"这次没跑成"），因此改动是向后兼容的。
+ACTION_TYPE_INTERNAL_ERROR = "internal_error"
+ACTION_TYPE_SANDBOX_TIMEOUT = "sandbox_timeout"
+
+
+def build_failure_trace(
+    *, case_id: str, run_index: int, reason: str, timed_out: bool = False
+) -> ExecutionTrace:
     """保守失败态 Trace（docs/dev/03 第 4.4 节拉取兜底 / docs/dev/04 第 5.3 节超时兜底 共用）。
 
     `loaded_skill_md=False` 是有意的保守判定：宁可漏判触发也不可误判触发，
     避免模块一假阳性。
+
+    `timed_out=True` 时末尾动作记为 `sandbox_timeout` 而不是 `internal_error`
+    （docs/dev/15 第 8 节）。默认 False 保持既有调用方行为不变——只有确实知道
+    "这是墙钟超时"的调用方（`scripts/pending_hooks_reaper.py`）才该传 True，
+    在这里靠字符串猜 reason 里有没有 "timeout" 是不可靠的。
     """
     now = datetime.now(UTC)
     return ExecutionTrace(
@@ -198,8 +217,14 @@ def build_failure_trace(*, case_id: str, run_index: int, reason: str) -> Executi
                 step_id=0,
                 timestamp=now,
                 thought=None,
-                action_type="internal_error",
-                action_input={"reason": "hermes_timeout_or_unreachable"},
+                action_type=(
+                    ACTION_TYPE_SANDBOX_TIMEOUT if timed_out else ACTION_TYPE_INTERNAL_ERROR
+                ),
+                action_input={
+                    "reason": "sandbox_wall_clock_timeout"
+                    if timed_out
+                    else "hermes_timeout_or_unreachable"
+                },
                 exit_code=1,
                 stdout=None,
                 stderr=truncate_field(reason),

@@ -162,7 +162,7 @@ from skill_evaluate.nodes.instruction_control import INTERRUPT_BEFORE_NODES
 
 若 `24`（或将来某个掌握真实历史水位的维度）能提供一个比"同批中位数"更靠谱的水位
 基线，在进入本维度前往状态里写 `_ic_baseline_token_watermark`（int）即可，探查节点
-会优先用它。不写就用本维度自算的那个（见第 5.3 节）。
+会优先用它。不写就用本维度自算的那个（见第 5.4 节）。
 
 ---
 
@@ -208,9 +208,27 @@ from skill_evaluate.state.trace import (
 `list_by_case()` 聚合的维度不需要为它做任何过滤。理由见
 `docs/dev/interfaces/14_script_usability_probing.md` 第 3.2、4 节。
 
+**`15` 已登记两组号段**（`docs/dev/interfaces/15_security_red_team.md` 第 4 节）：
+
+```python
+RUN_INDEX_SEC_PROMPT_INJECTION = 120        # 五条探测支路各占一个号，
+RUN_INDEX_SEC_DATA_POISONING = 121          # 闭环重测**复用同一个号**（覆盖旧记录，
+RUN_INDEX_SEC_ENV_AND_TRAVERSAL = 122       # 让判定只看当前这版的表现，与本维度
+RUN_INDEX_SEC_DOS = 123                     # 的闭环重测同一处理）
+RUN_INDEX_SEC_ARTIFACT_SAST = 124
+RUN_INDEX_SEC_REGRESSION_TRIGGER = 130      # 强制功能回归：重跑模块一（130~132）
+RUN_INDEX_SEC_REGRESSION_AB_LOADED = 140    # 强制功能回归：重跑本维度的 A/B
+RUN_INDEX_SEC_REGRESSION_AB_BASELINE = 141
+```
+
+**回归那一组尤其重要**：模块五的安全补丁必须证明自己没把正常业务改坏，为此要拿
+`working_skill` 重跑模块一的触发率与本维度的 A/B。不换号段的话，一次"为了验证补丁"
+的重跑会把模块一/三本次运行的真实结果覆盖掉——而那正是被验证的对象。为此本维度的
+`_run_ab()` 追加了一个 `run_index_base` 参数（默认值 = 本维度自己的号段，行为不变）。
+
 ---
 
-## 5. `14`~`20` 可以直接复用的三样东西
+## 5. `14`~`20` 可以直接复用的四样东西
 
 ### 5.1 探查扫描器（无 LLM、无 IO，纯函数）
 
@@ -237,7 +255,35 @@ from skill_evaluate.nodes.instruction_control import format_actions_for_review, 
 把上百步 × 32KB 输出整串塞进 Prompt，且不脱敏。本函数留头尾掐中间、逐字段截断、
 统一过一遍 `redact_secrets()`。
 
-### 5.3 Token 水位的算法（`resolve_token_watermark()`）
+### 5.3 A/B 骨架与 ROI 判定的**公开**入口（`15` 追加）
+
+`docs/dev/15` 第 11.2 节对本维度提了一条实现约束："判定核心逻辑应可脱离图节点上下文
+单独调用，LangGraph 节点函数只是对它的一层薄包装"。落实方式是加了两个公开包装
+（追加式扩展，本维度既有节点行为一个字没变）：
+
+```python
+# 执行骨架：并发跑"加载/基线"两条分支，返回 [(case, loaded_traces, baseline_traces)]
+results = await pipeline.run_ab_pairs(
+    run_id, working_skill, positive_cases,
+    run_index_base=RUN_INDEX_SEC_REGRESSION_AB_LOADED,   # 默认 RUN_INDEX_AB_LOADED
+)
+
+# ROI 判定：CRITICAL 共识，返回 JudgmentOutcome（含 skipped_reason，黄金盲测时非空）
+outcome = await pipeline.judge_roi(case, loaded, baseline)
+```
+
+`ab_comparative_execution` 节点现在就是这两个入口的薄包装。复用方注意两条：
+
+1. **必须换号段**（理由同第 4 节）；
+2. **`outcome.skipped_reason` 非空时不要算成失败**——那次请求被黄金基准盲测占用了，
+   根本没有评到这条用例，算成失败等于让一次抽检把补丁枪毙了。
+
+`15` 的 `FunctionalRegressionRunner` 就是这两个入口 + 模块一那两个入口的组合，
+`19`/`20` 若也需要"拿某个变体 Skill 重跑 A/B"，直接用它们，不要再造一份。
+（仍然遵守第 9 节那条：**不要改 `_run_ab()` 里 `ExecutionRequest` 的构造**——
+`sampling_overrides` / `background_skills` 属于那两个维度自己的语义。）
+
+### 5.4 Token 水位的算法（`resolve_token_watermark()`）
 
 docs/dev/13 正文第 7 节写的是 `state.get("_baseline_token_watermark", 999999)`，
 但正文没有说这个水位从哪来。实现按下面的口径补齐：
@@ -336,8 +382,9 @@ SKILLEVAL_INSTRUCTION_CONTROL_TRACE_DIGEST_MAX_OUTPUT_CHARS=400
 
 | 预留位置 | 当前状态 | 由哪份文档接入 | 接入方式 |
 |---|---|---|---|
-| `ExecutionRequest.assertion_specs` 在本维度的使用 | **未使用** | `15`（模块五更集中地使用 Validator） | 本维度的 A/B 与探查都不需要确定性断言；若某天要在 A/B 里核对产物，按 docs/dev/interfaces/10 的协议往 `_run_ab()` 的 `ExecutionRequest` 里加 `assertion_specs` 即可，节点结构不变 |
-| `run_index` 号段 100~99xx | 已用 100/101/110 | `14`/`15`/`19`/`20` | 在 `state/trace.py` 的分配表里申领并登记，见第 4 节 |
+| `ExecutionRequest.assertion_specs` 在本维度的使用 | **未使用**（本维度的 A/B 与探查都不需要确定性断言） | ✅ `15` 已在**自己的**维度里用（生成物 SAST 那条支路） | 若某天要在 A/B 里核对产物，按 docs/dev/interfaces/10 的协议往 `_run_ab()` 的 `ExecutionRequest` 里加 `assertion_specs` 即可，节点结构不变 |
+| `run_index` 号段 100~99xx | 已用 100/101/110（本维度）+ 120~124/130~132/140~141（`15`） | `19`/`20` | 在 `state/trace.py` 的分配表里申领并登记，见第 4 节 |
+| A/B 骨架与 ROI 判定的公开入口 | ✅ 已加（`run_ab_pairs()` / `judge_roi()`） | `15` 已用于强制功能回归 | 见第 5.3 节；`19`/`20` 可直接复用 |
 | 效率诊断/控制标定升级为阻断项 | 当前非阻断 | 运维调优，非新文档职责 | 改 `finalize_dimension_report()` 里 `blocking` 的计算式一处即可；同时应把对应 `Criticality` 升到 CRITICAL（`_to_outcome()` 已备好共识路径） |
 | ROI 判定的黄金基准用例 | 依赖 docs/dev/08 的黄金库 | `21`（Generator 可信度与黄金基准） | 往 `golden_cases` 表里加 `template_key='roi_comparison'` 的条目即可，本维度不需要改动 |
 | 跨模型跑 A/B | 未涉及 | `19` | `19` 自己构造带 `sampling_overrides` 的 `ExecutionRequest`，**不要**改本维度的 `_run_ab()`——请求的构造是各维度语义的一部分（与 docs/dev/interfaces/11 第 4.2 节同一条约定） |

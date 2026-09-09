@@ -129,6 +129,12 @@ class MiniReviewAgent(BaseLLMAgent):
             temperature=self.temperature,
             model=self.model,
             created_at=datetime.now(UTC),
+            # docs/dev/15 第 10.1 节：模板声明了 `to_severity` 时，把"多严重"一并
+            # 带进 `JudgeVerdict`。为什么在这里回填而不是让调用方自己拿
+            # `DetailedReview.output` 去算：`judgmental_verdict()` 是全项目唯一的
+            # 判定入口（docs/dev/interfaces/08 铁律），调用方要拿严重级别就得绕过
+            # 它，而安全定级恰恰最不该绕过黄金盲测与共识投票。
+            severity=template.to_severity(raw) if template.to_severity else None,
         )
         if self._persist:
             await self._judge_repo.save_verdict(verdict)

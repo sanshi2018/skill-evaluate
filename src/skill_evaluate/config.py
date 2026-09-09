@@ -212,6 +212,47 @@ class ScriptUsabilitySettings(BaseSettings):
     max_concurrent_scripts: int | None = None
 
 
+class SecuritySettings(BaseSettings):
+    """模块五（docs/dev/15）：安全性与注入风险红蓝对抗评测的参数。
+
+    本组配置的共同特点是**它们都在"成本"与"证据强度"之间做取舍**——安全维度是全
+    项目最贵的一个（五条探测支路 + 严重性定级全量走 3 副本共识 + 补丁必须过一次
+    全量功能回归），因此把这几个旋钮显式暴露出来，而不是让人去改代码。
+
+    唯一**不可配置**的是"安全判定一律 CRITICAL"（docs/dev/15 第 7 节）：把它做成
+    配置项，等于给"这次先关掉共识投票省点钱"留了口子，而安全判定的假阴性正是这份
+    文档最想防的东西。
+    """
+
+    model_config = SettingsConfigDict(env_prefix="SKILLEVAL_SECURITY_")
+
+    # 一次 bootstrap 出多少条对抗题。None = 按攻击面数量自动算
+    # （`agents.attacker.default_adversarial_count()`，当前七个攻击面 × 2 = 14 条）。
+    # 做成 None 而不是写死 14：将来注册第八个攻击面时总数自动跟上，不需要有人记得
+    # 回来改这个数字。
+    adversarial_case_count: int | None = None
+
+    # 探测类节点的单次执行墙钟超时。**比其余维度短**（默认 60s vs 模块一/三的 90s）：
+    # 对抗用例期望的结局大多是"立刻被拒绝"，跑满 90 秒只说明它陷进去了。DoS 探测
+    # 不用这个值，它显式取 `ExecutorSettings.sandbox_wall_clock_timeout_s`
+    # 这个硬上限（docs/dev/15 第 8 节）。
+    probe_timeout_s: int = 60
+
+    # 强制功能回归（docs/dev/15 第 11.2 节）是否包含 A/B 的 ROI 判定。
+    # 默认开：架构文档要求安全补丁"必须"过一次功能回归，而只测触发率是不够的——
+    # 一条把路径写死的刚性约束不会影响 Skill 被唤醒，只会让它唤醒之后干不了活。
+    # 允许关掉是因为 A/B 是全项目最贵的一项检查（用例数 × 2 条分支 × 最多 3 轮闭环），
+    # 成本压力大到必须取舍时，关掉它并在报告里看得见，好过有人偷偷把整个闭环停掉。
+    regression_includes_roi: bool = True
+    # 回归时最多重跑几条用例（0 = 不限）。抽样会削弱这道闸门，因此默认不限；
+    # 设了非零值时，报告 findings 里会写明"本次回归只跑了 N 条"。
+    regression_max_cases: int = 0
+
+    # 探测证据写进 `SecurityFinding.evidence` 的长度上限。证据要够人复现，又不能
+    # 让一条 finding 把整个报告页面撑爆；完整轨迹在 `execution_traces` 里可回查。
+    evidence_max_chars: int = 2000
+
+
 class JudgeSettings(BaseSettings):
     """Judge Agent 的可信度机制参数（docs/dev/08）。
 
@@ -309,6 +350,7 @@ class Settings(BaseSettings):
         default_factory=InstructionControlSettings
     )
     script_usability: ScriptUsabilitySettings = Field(default_factory=ScriptUsabilitySettings)
+    security: SecuritySettings = Field(default_factory=SecuritySettings)
     judge: JudgeSettings = Field(default_factory=JudgeSettings)
     optimizer: OptimizerSettings = Field(default_factory=OptimizerSettings)
     validator: ValidatorSettings = Field(default_factory=ValidatorSettings)

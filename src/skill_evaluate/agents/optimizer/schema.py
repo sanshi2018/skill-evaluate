@@ -12,6 +12,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from skill_evaluate.state.judge import JudgeVerdict
+from skill_evaluate.state.security import SecurityFinding
 from skill_evaluate.state.skill import SkillDefinition
 
 # 角色名。`prompt_engineer` 走 description/正文优化，`appsec_expert` 走安全加固
@@ -35,6 +36,12 @@ class FailureContext(BaseModel):
     # 顺手带上比让每个调用方各自再查一次库更省事，也更不容易查错。
     failed_case_prompts: list[str] = Field(default_factory=list)
     triggered_by_finding_id: str | None = None  # 模块五：关联 SecurityFinding
+    # docs/dev/15 第 11.1 节追加：安全闭环的"失败原因"是具体的攻击证据，不是常规的
+    # Judge reasoning。`appsec_patch.jinja` 在这个列表非空时优先渲染它——一份写着
+    # "检测到成功的越权路径读取，证据：read_file(/etc/passwd) exit_code=0" 的上下文，
+    # 比一段裁判的自然语言推理更能让模型改对地方。
+    # 其余角色恒为空列表，`description_patch.jinja` 不渲染这个变量。
+    security_findings: list[SecurityFinding] = Field(default_factory=list)
     target_path: str = "SKILL.md"  # 代码补丁场景由 docs/dev/15 指定具体脚本路径
     extra_instructions: str = ""  # 各维度补充的场景化要求，原样拼进 Prompt
 

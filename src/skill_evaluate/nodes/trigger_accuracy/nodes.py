@@ -71,7 +71,7 @@ from skill_evaluate.state.enums import DatasetSplit, JudgeVerdictStatus, TestCas
 from skill_evaluate.state.judge import JudgeVerdict
 from skill_evaluate.state.skill import SkillDefinition
 from skill_evaluate.state.test_case import TestCase
-from skill_evaluate.state.trace import ExecutionTrace
+from skill_evaluate.state.trace import RUN_INDEX_REDUNDANT_BASE, ExecutionTrace
 
 logger = get_logger(component=DIMENSION)
 
@@ -231,7 +231,12 @@ class TriggerAccuracyPipeline:
         return {"executed_trace_ids": trace_ids}
 
     async def run_cases(
-        self, run_id: str, skill: SkillDefinition, cases: Sequence[TestCase]
+        self,
+        run_id: str,
+        skill: SkillDefinition,
+        cases: Sequence[TestCase],
+        *,
+        run_index_base: int = RUN_INDEX_REDUNDANT_BASE,
     ) -> dict[str, list[ExecutionTrace]]:
         """对每条用例并发跑 `redundant_runs` 次，返回 {case_id: [trace, ...]}。
 
@@ -242,6 +247,14 @@ class TriggerAccuracyPipeline:
         复用"每条用例并发跑 N 次"这套骨架，但各自构造自己的 `ExecutionRequest`
         （`sampling_overrides` / `background_skills` 属于那两个维度的语义，本维度
         刻意不带——触发准确度测的是默认配置下的行为）。
+
+        `run_index_base`（docs/dev/15 追加）：Trace 落在哪个号段起始。默认 0 = 本维度
+        自己的冗余执行号段，**已有调用方不受影响**。模块五的强制功能回归要拿一个
+        打了安全补丁的 working_skill 重跑同一批用例，必须落在自己的号段里
+        （`RUN_INDEX_SEC_REGRESSION_TRIGGER`）——`execution_traces` 的唯一键是
+        `(case_id, run_index)`，不换号段的话，一次"为了验证补丁"的重跑会把本维度
+        本次运行的真实结果覆盖掉，而那正是被验证的对象。号段分配表见
+        `state/trace.py`。
 
         并发上限由 `ExecutorSettings.max_concurrent_sandboxes` 通过信号量控制：
         `asyncio.gather` 会把 `用例数 × 3` 个沙箱请求一次性打出去，训练集稍大就
@@ -263,7 +276,10 @@ class TriggerAccuracyPipeline:
 
         async def run_case(case: TestCase) -> tuple[str, list[ExecutionTrace]]:
             traces = await asyncio.gather(
-                *[run_once(case, i) for i in range(self.deps.redundant_runs)]
+                *[
+                    run_once(case, run_index_base + i)
+                    for i in range(self.deps.redundant_runs)
+                ]
             )
             return case.case_id, list(traces)
 

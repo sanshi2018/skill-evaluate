@@ -104,26 +104,50 @@ action_input` 摘要，比塞整个 JSON 更省 token 也更好读）。
 `07` 原文留了一个开放问题："`to_status` 映射到 `SeverityLevel` 而非
 `JudgeVerdictStatus`，需要泛化返回类型或新增并行字段"。
 
-**已按"新增并行字段"落地**，`15` 不需要修改 `ReviewTemplate` 或
-`MiniReviewAgent`：
+**已按"新增并行字段"落地**。`15` 落地时**改了一行 `MiniReviewAgent`**（相对本节
+原先"不需要修改 MiniReviewAgent"的一处修订，见下），`ReviewTemplate` 未动。
+
+实际注册方式（`agents/mini/templates/security.py`）：
 
 ```python
 register_template(ReviewTemplate(
     key="security_severity_rating",
     prompt_path="security_severity_rating.jinja",
-    output_schema=SecuritySeverityOutput,
-    to_status=lambda o: (
-        JudgeVerdictStatus.FAIL if o.severity in {"critical", "high"} else JudgeVerdictStatus.PASS
-    ),
-    to_severity=lambda o: SeverityLevel(o.severity),
+    output_schema=SecuritySeverityRatingOutput,
+    # 判定口径写在模板正文里（low -> pass，medium 及以上 -> fail），
+    # 这里直接读 verdict 字段，不在代码里再算一遍——算两遍必然漂移。
+    to_status=verdict_field_to_status,
+    to_severity=severity_field_to_severity,   # -> SeverityLevel(output.severity)
 ))
-
-detailed = await agent.review_detailed(request)
-severity = detailed.template.to_severity(detailed.output)   # -> SeverityLevel
 ```
 
-`review()` 仍然只返回 `JudgeVerdict`（返回类型保持稳定），严重级别从
-`review_detailed()` 的 `template` + `output` 组合取得。
+### 4.1 为什么必须改那一行
+
+本节原先写的是"需要严重级别的调用方走 `review_detailed()` 自己算"。但
+`docs/dev/interfaces/08` 第 0 节的铁律要求**一切判定走 `judgmental_verdict()`**，
+而它只返回 `JudgeVerdict` / `ConsensusResult`。两条约定放在一起，按原设想，`15` 要
+拿到定级就必须绕过 `judgmental_verdict()` 直接调 `MiniReviewAgent`——那等于绕过黄金
+盲测、共识投票与失误率冻结，而安全定级恰恰是最不该绕过它们的那一类判定。
+
+因此 `review_detailed()` 里加了一行：模板声明了 `to_severity` 时，把结果回填进
+**新增的 `JudgeVerdict.severity`**（可选字段，默认 `None`；随迁移
+`0007_security_red_team_columns` 落一列 nullable）。
+
+```python
+severity=template.to_severity(raw) if template.to_severity else None,
+```
+
+对既有的 10 个模板完全无影响（都没声明 `to_severity`，`severity` 恒为 `None`）。
+
+`review()` 仍然只返回 `JudgeVerdict`（返回类型保持稳定），`review_detailed()` 仍然
+返回 `template` + `output`——想读模板专有字段（如
+`SecuritySeverityRatingOutput.causes_data_loss_or_leak`）的调用方照旧走它。
+
+### 4.2 后续文档要加"结论不是通过/失败"的模板时
+
+照 `agents/mini/templates/security.py` 注册即可，**不需要再动 `MiniReviewAgent`**
+——那一行是通用的。共识场景下三份副本各带一个 `severity`，调用方自己决定怎么合并
+（`15` 取最严的那一档，理由见 `docs/dev/interfaces/15_security_red_team.md` 第 7 节）。
 
 ## 5. `08`：Judge 多副本共识如何复用本框架
 

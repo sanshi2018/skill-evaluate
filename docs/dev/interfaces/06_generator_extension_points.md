@@ -1,6 +1,6 @@
 # 接入文档：Generator 扩展点（docs/dev/06 留给后续模块的接口）
 
-> 由谁接入：`15`（Attacker）、`16/17`（模块六/七覆盖率补盲）、`19`（模块九）、
+> 由谁接入：`15`（Attacker，**见第 3 节的例外**）、`16/17`（模块六/七覆盖率补盲）、`19`（模块九）、
 > `20`（模块十组合矩阵）、`21`（种子锚点与反坍塌）。
 > 当前状态：接口全部就位，`REUSE` / `FORCE_REGENERATE` / `INCREMENTAL_PATCH`
 > 三态已完整实现并有测试覆盖（`tests/skill_evaluate/test_generator.py`）。
@@ -63,7 +63,7 @@ version = await TestSuiteService().incremental_patch(
 | `combinatorial_gap` | 模块十组合矩阵盲区 |
 | `cross_model_sampling` | 模块九验证集不足时定向生成 |
 
-## 3. 新增用例类别（`15` ADVERSARIAL、`20` MULTI_SKILL）
+## 3. 新增用例类别（`20` MULTI_SKILL）
 
 > ⚠️ **`13` 落地后此节已改**：原先的硬编码字典 `_TEMPLATE_BY_CATEGORY` 已被
 > **注册表**取代，新增类别不再需要改 `agent.py`。
@@ -72,7 +72,18 @@ version = await TestSuiteService().incremental_patch(
 `progressive_disclosure_regular`（`13`）。传入未注册的 category 仍然抛
 `GenerationError`，错误信息里直接点名了应由哪份文档补齐（不是静默跳过）。
 
-接入方式：
+> ⚠️ **`15` 落地后此节又改了一处：`ADVERSARIAL` 不走这张表**。模块五底下有**七个
+> 攻击面**，各有各的构造要求，共用一个 `adversarial.jinja` 会得到一份七种要求混在
+> 一起的超长 Prompt，模型只会挑最好写的那两类反复出题。它由
+> `agents.attacker.AttackerAgent`（`GeneratorAgent` 的子类，只重写 `ADVERSARIAL`
+> 这一支，其余类别照常交给父类）用**第二层**注册表
+> `agents/attacker/playbook.py` 承担。用普通 `GeneratorAgent` 传 ADVERSARIAL 会拿到
+> `GenerationError`，错误信息里点名了应改用 `AttackerAgent`。
+>
+> 换句话说：**类别底下还要再分手法时，加第二层注册表，不要把手法塞进一个模板**。
+> `20` 的 MULTI_SKILL 若也演化成多种组合手法，照 `attacker/playbook.py` 抄。
+
+接入方式（以 `20` 的 MULTI_SKILL 为例）：
 
 1. 在 `agents/generator/prompts/` 下新增 `adversarial.jinja`（可 `import
    "_shared.jinja"` 复用 `skill_block` / `focus_block` / `output_contract`
@@ -85,9 +96,9 @@ version = await TestSuiteService().incremental_patch(
    from skill_evaluate.agents.generator.prompts.registry import register_generation_template
 
    register_generation_template(
-       TestCaseCategory.ADVERSARIAL,
-       "adversarial.jinja",
-       description="红队攻击用例（模块五 / docs/dev/15）",
+       TestCaseCategory.MULTI_SKILL,
+       "multi_skill.jinja",
+       description="多技能并发用例（模块十 / docs/dev/20）",
    )
    ```
 
@@ -101,7 +112,7 @@ version = await TestSuiteService().incremental_patch(
    `positive_count` / `negative_count` 的语义：
 
    ```python
-   GenerationRequest(..., category_counts={TestCaseCategory.ADVERSARIAL: 12})
+   GenerationRequest(..., category_counts={TestCaseCategory.MULTI_SKILL: 12})
    ```
 
 `GeneratedCase.diversity_tag` 是自由字符串，新类别可以定义自己的取值集合，
@@ -129,6 +140,43 @@ result = await TestSuiteService().ensure_test_suite(
 
 请求条数算到 0 时**不会**发 LLM 请求，直接当"这个 Skill 没有这类用例可出"处理
 （`13` 用它表达"这份 Skill 没有 references/，无渐进式披露可探"）。
+
+### 3.2 `extra_triggered_by=`：让"这批题是谁让出的"可追溯（`15` 追加）
+
+补生成走 `INCREMENTAL_PATCH` 落一个新版本，`triggered_by` 默认写
+`"dimension_extra_categories"`。所有走 `extra_categories` 的维度共用一个值，等于把
+"测试集为什么变了"这条线索抹平了，因此加了一个纯审计的覆盖参数：
+
+```python
+await TestSuiteService().ensure_test_suite(
+    skill,
+    extra_categories=[TestCaseCategory.ADVERSARIAL],
+    category_counts={TestCaseCategory.ADVERSARIAL: 14},
+    extra_triggered_by="attacker_bootstrap",       # 15 用这个值
+)
+```
+
+不影响任何生成逻辑，只落到 `triggered_by` 审计字段（取值表见第 2 节）。
+
+### 3.3 `incremental_patch_categories()`：按**类别**定向重出题（`15` 追加）
+
+`incremental_patch()` 是按**能力盲区**补题（要一个非空的 `CapabilityFocus`）。`15`
+的"红队手法更新了，同一批攻击面重新出题"不属于那个场景——它不是某个能力没覆盖到。
+
+```python
+version = await TestSuiteService().incremental_patch_categories(
+    skill,
+    categories=[TestCaseCategory.ADVERSARIAL],
+    category_counts={TestCaseCategory.ADVERSARIAL: 14},
+    triggered_by="manual_cli",
+)
+```
+
+与 `_ensure_extra_categories()` 的差别：那个的口径是"该类别一条都没有才生成"
+（REUSE 语义），本方法是**显式的重出题，每次都生成**。刻意做成两个方法而不是加一个
+`force` 参数——那个参数会让 REUSE 路径上多一条随时可能被误传的分支，而"测试集是否
+重出"是本项目最要紧的一条约束。已有用例（包括旧的同类别用例）原样继承，`split` 归属
+不变，旧版本保留为非 active。
 
 ## 4. 反坍塌校验与种子锚点（`21`）
 

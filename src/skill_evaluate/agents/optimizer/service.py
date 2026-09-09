@@ -36,6 +36,7 @@ from skill_evaluate.persistence.repository import PatchRepository
 from skill_evaluate.state.enums import DatasetSplit, PatchType
 from skill_evaluate.state.judge import ConsensusResult, JudgeVerdict
 from skill_evaluate.state.patch import Patch
+from skill_evaluate.state.security import SecurityFinding
 from skill_evaluate.state.skill import SkillDefinition
 from skill_evaluate.state.test_case import TestCase
 
@@ -115,6 +116,7 @@ def build_failure_context(
     triggered_by_finding_id: str | None = None,
     target_path: str = "SKILL.md",
     extra_instructions: str = "",
+    security_findings: list[SecurityFinding] | None = None,
 ) -> FailureContext:
     """构造 `FailureContext` 的**唯一合法入口**。
 
@@ -124,6 +126,11 @@ def build_failure_context(
 
     `verdicts` 允许直接传 `ConsensusResult`：共识判定的三份 verdict 会被展开，
     调用方不需要为"这次是 ROUTINE 还是 CRITICAL"写两套构造代码。
+
+    `security_findings`（docs/dev/15 第 11.1 节）是模块五专用的失败证据。模块五的
+    很多判定走的是确定性规则而不是 LLM 裁决，此时 `verdicts` 里的 reasoning 只是
+    一句规则名 + inputs，对修补丁的模型没有信息量；真正有用的是 `SecurityFinding`
+    里那段具体证据。因此模块五传的是 `verdicts=[]` + 非空的 `security_findings`。
     """
     non_train = [case for case in failed_cases if case.split is not DatasetSplit.TRAIN]
     if non_train:
@@ -149,6 +156,7 @@ def build_failure_context(
         triggered_by_finding_id=triggered_by_finding_id,
         target_path=target_path,
         extra_instructions=extra_instructions,
+        security_findings=list(security_findings or []),
     )
 
 
@@ -193,6 +201,9 @@ class OptimizerAgent(BaseLLMAgent):
             verdicts=ctx.verdicts,
             extra_instructions=ctx.extra_instructions,
             target_path=ctx.target_path,
+            # docs/dev/15：只有 appsec_patch.jinja 渲染它，其余模板不引用。
+            # 模板环境是 StrictUndefined，"用到未定义变量"才报错，多传无害。
+            security_findings=ctx.security_findings,
         )
         proposal = await self._call_llm(prompt, PatchProposal, system=_SYSTEM_PROMPT)
         patch = self._to_patch(ctx, spec, proposal)

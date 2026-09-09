@@ -6,7 +6,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
-from skill_evaluate.state.enums import JudgeVerdictStatus
+from skill_evaluate.state.enums import JudgeVerdictStatus, SeverityLevel
 
 
 class JudgeVerdict(BaseModel):
@@ -17,6 +17,16 @@ class JudgeVerdict(BaseModel):
     temperature: float
     model: str
     created_at: datetime
+    # docs/dev/15 第 10.1 节落地 docs/dev/07 预留的 `ReviewTemplate.to_severity`：
+    # 有些判定（当前只有模块五的严重性定级）的结论不是"通过/失败"，而是"多严重"。
+    # 由 `MiniReviewAgent.review_detailed()` 在模板声明了 `to_severity` 时回填，
+    # 其余模板恒为 None。
+    #
+    # 为什么加在 JudgeVerdict 上而不是让调用方自己走 review_detailed()：
+    # `judgmental_verdict()` 是全项目唯一的判定入口（docs/dev/interfaces/08 铁律），
+    # 它只返回 JudgeVerdict / ConsensusResult。要拿严重级别就绕过入口，等于绕过
+    # 黄金盲测与共识投票——而安全定级恰恰是最不该绕过它们的那一类判定。
+    severity: SeverityLevel | None = None
 
 
 class ConsensusResult(BaseModel):

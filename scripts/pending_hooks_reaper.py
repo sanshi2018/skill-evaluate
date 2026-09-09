@@ -38,6 +38,10 @@ async def reap_once(older_than_seconds: int) -> int:
             case_id=item["case_id"],
             run_index=item["run_index"],
             reason=f"wall-clock timeout after {older_than_seconds}s waiting for hermes hook",
+            # docs/dev/15 第 8 节：本巡检**就是**墙钟超时那条路径，因此末尾动作记为
+            # `sandbox_timeout` 而不是 `internal_error`。模块五的 DoS 判定据此把
+            # "超时 = 成功阻断挂起"与"沙箱崩了"区分开——两者判定方向相反。
+            timed_out=True,
         )
         await trace_repo.save(trace)
         await resolve_suspension(

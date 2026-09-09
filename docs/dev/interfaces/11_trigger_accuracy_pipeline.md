@@ -172,11 +172,46 @@ traces_by_case = await pipeline.run_cases(run_id, skill, cases)
 `run_cases`，而是在自己的维度里按同样的形状写一份——`ExecutionRequest` 的构造是
 各维度语义的一部分（本维度刻意不带这两个字段：触发准确度测的是默认配置下的行为）。
 
-### 4.3 量化规则
+**`15` 落地时给它追加了一个关键字参数**（默认值 = 原行为，既有调用方不受影响）：
+
+```python
+traces = await pipeline.run_cases(
+    run_id, working_skill, cases,
+    run_index_base=RUN_INDEX_SEC_REGRESSION_TRIGGER,   # 默认 RUN_INDEX_REDUNDANT_BASE = 0
+)
+```
+
+理由：模块五的强制功能回归要拿一个打了安全补丁的 `working_skill` 重跑**同一批**
+用例。`execution_traces` 的唯一键是 `(case_id, run_index)`，不换号段的话，一次
+"为了验证补丁"的重跑会把本维度本次运行的真实结果覆盖掉——而那正是被验证的对象。
+号段分配表见 `state/trace.py`（`docs/dev/interfaces/13` 第 4 节）。
+
+### 4.3 判定逻辑本来就可以脱离图状态单独调用（`15` 的一条实现约束）
+
+`docs/dev/15` 第 11.2 节对本维度提了一条约束："判定核心逻辑应可脱离图节点上下文
+单独调用"。本维度**天然满足**：`run_cases()` 本来就是公开的，判定那一半是
+`rules.py` 里两个纯函数：
+
+```python
+from skill_evaluate.nodes.trigger_accuracy import rules as trigger_rules
+
+inputs  = trigger_rules.trigger_rate_inputs(traces[case.case_id])   # -> {loaded_count, run_count}
+verdict = judge.quantitative_verdict(subject_id, trigger_rules.rule_for_category(cat), inputs)
+```
+
+`_judge_split()` 只是"读 state → 调上面这两行 → 写回 state"的薄包装。因此
+`15` 的功能回归直接组合这两个入口，**不复制一份触发率判定逻辑**。
+
+### 4.4 量化规则
 
 `rule_for_category()` 只接受 POSITIVE / NEGATIVE，其余类别直接 `ValueError`。
 `15`（ADVERSARIAL）、`20`（MULTI_SKILL）要按自己的语义注册新规则，不要复用触发率
 规则去判"攻击是否被挡住"。
+
+**`15` 已照此办理**：它注册了五条自己的规则（`security_payload_execution` /
+`security_env_leak` / `security_path_traversal` / `security_dos_resilience` /
+`security_artifact_sast`，见 `nodes/security/rules.py`）。它**唯一**复用本维度规则
+的地方是强制功能回归——那里跑的本来就是 POSITIVE/NEGATIVE 用例，语义完全一致。
 
 ---
 

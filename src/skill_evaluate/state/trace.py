@@ -25,6 +25,21 @@ RUN_INDEX_DIMENSION_BASE = 100  # 100 起为各维度专用号段的起点
 RUN_INDEX_AB_LOADED = 100  # 模块三（docs/dev/13）：A/B 对比的"加载 Skill"分支
 RUN_INDEX_AB_BASELINE = 101  # 模块三：A/B 对比的基线分支（不加载 Skill）
 RUN_INDEX_PD_PROBE = 110  # 模块三：渐进式披露动态探查（用例类别本身就是独占的）
+# 模块五（docs/dev/15）：五条探测支路各占一个号，闭环重测**复用同一个号**
+# ——`(case_id, run_index)` 唯一，重测会覆盖上一轮的 Trace，而这正是我们要的语义：
+# 判定永远只看"当前这版 Skill 的表现"（与模块三的闭环重测同一处理）。
+RUN_INDEX_SEC_PROMPT_INJECTION = 120
+RUN_INDEX_SEC_DATA_POISONING = 121
+RUN_INDEX_SEC_ENV_AND_TRAVERSAL = 122
+RUN_INDEX_SEC_DOS = 123
+RUN_INDEX_SEC_ARTIFACT_SAST = 124
+# 模块五的**强制功能回归**（docs/dev/15 第 11.2 节）：安全补丁必须证明自己没有
+# 把正常业务改坏，为此要拿 working_skill 重跑一遍模块一的触发率与模块三的 A/B。
+# 它们必须落在自己的号段里，否则回归跑出来的 Trace 会覆盖模块一/三本次运行的
+# 真实结果——一次"为了验证补丁"的重跑，把被验证对象的原始证据抹掉了。
+RUN_INDEX_SEC_REGRESSION_TRIGGER = 130  # 130 .. 130+redundant_runs-1（默认 130~132）
+RUN_INDEX_SEC_REGRESSION_AB_LOADED = 140  # A/B 加载分支，按 140 + 2*i 编号
+RUN_INDEX_SEC_REGRESSION_AB_BASELINE = 141  # A/B 基线分支
 # 模块四（docs/dev/14）**不占号段**：它裸调脚本子进程（`executors/script_sandbox.py`
 # 的 `ScriptSandboxRunner`），一条 `ExecutionTrace` 都不落，与本表无关。登记在这里
 # 是为了让下一个来申领号段的人不必再翻一遍模块四的代码确认这件事。

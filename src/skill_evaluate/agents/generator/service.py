@@ -77,6 +77,7 @@ class TestSuiteService:
         *,
         extra_categories: list[TestCaseCategory] | None = None,
         category_counts: dict[TestCaseCategory, int] | None = None,
+        extra_triggered_by: str = "dimension_extra_categories",
     ) -> EnsureTestSuiteResult:
         """流水线默认入口：能复用就复用，从未生成过才首次生成。
 
@@ -89,12 +90,19 @@ class TestSuiteService:
 
         `category_counts` 是逐类别的条数覆盖，透传给 `GenerationRequest`；模块三按
         "每个参考文件各出一条触发探查题"算出条数，只有调用方算得出来。
+
+        `extra_triggered_by`（docs/dev/15 追加）只影响审计字段
+        `TestSuiteVersion.generation_mode` 旁边的那条 `triggered_by` 记录，不影响
+        任何生成逻辑。加它是因为"这批题是谁让出的"在排查"测试集为什么变了"时是
+        主要线索，而所有走 `extra_categories` 的维度共用一个
+        `dimension_extra_categories`，等于把线索抹平了（模块五传
+        `attacker_bootstrap`）。
         """
         extras = list(extra_categories or [])
         existing = await self._suite_repo.get_active_version(skill.skill_id, skill.version_ref)
         if existing is not None:
             topped_up = await self._ensure_extra_categories(
-                skill, existing, extras, category_counts
+                skill, existing, extras, category_counts, extra_triggered_by
             )
             if topped_up is not None:
                 return EnsureTestSuiteResult(suite_version=topped_up, generated=True)
@@ -127,7 +135,9 @@ class TestSuiteService:
             # 版本漂移时仍然要补齐缺失的类别：一份 2024 年生成的用例集里当然不会有
             # docs/dev/13 才引入的探查用例，那不是"漂移"而是"这个维度从没出过题"。
             # 补生成挂在漂移的那一版上，staleness 告警照样带出去。
-            topped_up = await self._ensure_extra_categories(skill, stale, extras, category_counts)
+            topped_up = await self._ensure_extra_categories(
+                skill, stale, extras, category_counts, extra_triggered_by
+            )
             return EnsureTestSuiteResult(
                 suite_version=topped_up or stale,
                 staleness_warning=warning,
@@ -156,6 +166,7 @@ class TestSuiteService:
         current: TestSuiteVersion,
         extra_categories: list[TestCaseCategory],
         category_counts: dict[TestCaseCategory, int] | None,
+        triggered_by: str = "dimension_extra_categories",
     ) -> TestSuiteVersion | None:
         """补齐现有用例集里**一条都没有**的额外类别，返回新版本；无需补齐时返回 None。
 
@@ -203,7 +214,7 @@ class TestSuiteService:
                 positive_count=0,
                 negative_count=0,
                 category_counts=counts,
-                triggered_by="dimension_extra_categories",
+                triggered_by=triggered_by,
             ),
             inherited_case_ids=current.case_ids,
         )
@@ -288,6 +299,51 @@ class TestSuiteService:
             triggered_by=triggered_by,
         )
         return await self._generate_and_activate(request, inherited_case_ids=current.case_ids)
+
+    async def incremental_patch_categories(
+        self,
+        skill: SkillDefinition,
+        *,
+        categories: list[TestCaseCategory],
+        category_counts: dict[TestCaseCategory, int],
+        triggered_by: str,
+    ) -> TestSuiteVersion:
+        """按**类别**定向补生成（docs/dev/15 追加）。
+
+        与 `incremental_patch()` 的分工：那个按**能力盲区**补题（模块六/七/十的
+        `CapabilityFocus`），这个按**类别**补题。模块五的"重出一套对抗题"属于后者
+        ——它不是某个能力没覆盖到，而是"红队手法更新了，同一批攻击面要重新出题"。
+
+        为什么不复用 `_ensure_extra_categories()`：那个的判定口径是"该类别一条都
+        没有才生成"（REUSE 语义），而本方法是显式的重出题，必须每次都生成。两者
+        共用一个方法就得加一个 `force` 参数，而那个参数会让 REUSE 路径上多一条
+        随时可能被误传的分支——测试集是否重出是本项目最要紧的一条约束。
+
+        已有用例**原样继承**（包括旧的同类别用例），`split` 归属不变：新旧对抗题
+        并存，历史结论仍可回查，旧版本只是不再 active。
+        """
+        current = await self._suite_repo.get_active_version(skill.skill_id, None)
+        if current is None:
+            raise GenerationError(
+                f"skill_id={skill.skill_id!r} 还没有任何 active 测试集版本，"
+                "无法按类别补齐；请先走 ensure_test_suite() 完成首次生成。"
+            )
+        if not categories:
+            raise GenerationError("incremental_patch_categories 需要非空的 categories")
+
+        return await self._generate_and_activate(
+            GenerationRequest(
+                skill=skill,
+                mode=GenerationMode.INCREMENTAL_PATCH,
+                categories=list(categories),
+                # 归零，避免顺手重出一套正/反向题（那就等于变相的 force_regenerate）。
+                positive_count=0,
+                negative_count=0,
+                category_counts=dict(category_counts),
+                triggered_by=triggered_by,
+            ),
+            inherited_case_ids=current.case_ids,
+        )
 
     # ------------------------------------------------------------------ #
     # 生成 + 激活

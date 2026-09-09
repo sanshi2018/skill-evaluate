@@ -89,6 +89,70 @@ def generate(
 
 
 @app.command()
+def generate_attacks(
+    skill_path: str = typer.Option(..., "--skill-path", help="SKILL.md 文件或其所在目录"),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="强制重新生成对抗用例（旧版本保留为历史，不删除）。不加此参数时，"
+        "已有对抗用例一律复用，不会调用任何 LLM。",
+    ),
+    count: int | None = typer.Option(
+        None,
+        "--count",
+        help="出多少条对抗题。不给则按已注册的攻击面数量自动算（当前 7 × 2 = 14），"
+        "将来新增攻击面时会自动跟上。",
+    ),
+) -> None:
+    """生成或复用一份 Skill 的**对抗**测试集（模块五 / docs/dev/15 第 2 节）。
+
+    与 `generate` 的分工：那个出正/反向功能用例（模块一），本命令出红队用例。
+    分成两条命令而不是加一个 `--adversarial` 开关，是因为两者的更新节奏不同——
+    新增一类攻击手法不该让触发准确度的历史分数失去可比性，反过来也一样。
+
+    **`--force` 只重出对抗题**，正/反向用例原样继承（走 `INCREMENTAL_PATCH`，
+    旧版本保留为非 active，历史结论仍可回查）。与 `generate --force` 一样，
+    **CI 默认调用路径不带 `--force`**：必须由人显式加上。
+    """
+    configure_logging()
+
+    from skill_evaluate.agents.attacker import AttackerService, default_adversarial_count
+    from skill_evaluate.ingestion import load_skill
+
+    skill = load_skill(skill_path)
+    requested = default_adversarial_count() if count is None else count
+    logger.info(
+        "generate_attacks_start",
+        skill_id=skill.skill_id,
+        version_ref=skill.version_ref,
+        force=force,
+        requested_count=requested,
+    )
+
+    service = AttackerService()
+
+    async def _run() -> None:
+        if force:
+            version = await service.force_regenerate(skill, count=requested)
+            typer.echo(
+                f"已强制重新生成对抗用例：suite_version_id={version.suite_version_id} "
+                f"（用例集共 {len(version.case_ids)} 条）"
+            )
+            return
+
+        result = await service.ensure_adversarial_suite(skill, count=requested)
+        if result.staleness_warning:
+            typer.secho(result.staleness_warning, fg=typer.colors.YELLOW)
+        action = "已生成对抗用例" if result.generated else "复用已有对抗用例"
+        typer.echo(
+            f"{action}：suite_version_id={result.suite_version.suite_version_id} "
+            f"（用例集共 {len(result.suite_version.case_ids)} 条）"
+        )
+
+    asyncio.run(_run())
+
+
+@app.command()
 def lint(
     skill_path: str = typer.Option(..., "--skill-path", help="SKILL.md 文件或其所在目录"),
 ) -> None:

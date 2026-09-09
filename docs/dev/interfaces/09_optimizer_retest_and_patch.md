@@ -76,10 +76,12 @@ verdict），所以你不需要为 ROUTINE / CRITICAL 写两套构造代码。
 
 ```python
 ctx = build_failure_context(
-    skill, failed_cases, verdicts,
+    skill, failed_cases,
+    [],                                           # ← 15 传空列表，见下
     role=ROLE_APPSEC_EXPERT,
     triggered_by_finding_id=finding.finding_id,   # 落到 Patch.triggered_by_finding_id
     target_path="scripts/convert.py",             # 代码补丁场景指明目标脚本
+    security_findings=train_findings,             # ← 15 落地时追加的字段
 )
 
 async def security_retest_fn(working_skill: SkillDefinition) -> LoopResult:
@@ -90,6 +92,21 @@ async def security_retest_fn(working_skill: SkillDefinition) -> LoopResult:
     return LoopResult(passed=True, detail="安全修复且功能回归通过")
 ```
 
+### `15` 落地后追加的字段：`FailureContext.security_findings`
+
+模块五的四条探测支路走的是**确定性规则**而不是 LLM 裁决，此时 `verdicts` 里的
+`reasoning` 只是一句"quantitative rule 'security_path_traversal' over inputs=…"，
+对修补丁的模型没有任何信息量。真正有用的是 `SecurityFinding.evidence` 里那段具体
+证据（"[step:3] read_file input=['/etc/passwd'] exit_code=0"）。
+
+因此 `FailureContext` 追加了 `security_findings: list[SecurityFinding]`（默认空列表，
+既有调用方不受影响），`appsec_patch.jinja` 在它非空时渲染一个「红队发现」段落，
+按严重级别排优先级。`15` 的实际用法就是上面那段：**`verdicts=[]` + 非空的
+`security_findings`**。
+
+`description_patch.jinja` 不渲染这个变量（模板环境是 `StrictUndefined`，只在**用到**
+未定义变量时报错，多传一个无害）。
+
 **功能回归是强制的**（架构文档原文）。自动生成的安全约束容易"过度杀伤"——为了
 防路径穿越把路径写死，正常的跨目录读取就废了。两道关卡：
 
@@ -97,6 +114,12 @@ async def security_retest_fn(working_skill: SkillDefinition) -> LoopResult:
    可能误伤正常功能路径、什么情况下会误伤）。该内容会被拼进 `Patch.rationale`
    的「功能误伤评估」段落，跟着补丁一路走到人工审查卡片上。
 2. 回归层：就是你这个 `retest_fn` 的第二段。
+
+**`15` 已落地，实现可直接复用**：`nodes/security/regression.py::FunctionalRegressionRunner`
+把模块一的触发率判定与模块三的 ROI 判定拼成一次回归（两者都通过才算 `passed`）。
+它不依赖模块五的任何状态，`19`/`20` 若也需要"拿某个变体 Skill 重跑模块一/三的判定"，
+直接用它，不要再造一份。细节见
+`docs/dev/interfaces/15_security_red_team.md` 第 6 节。
 
 `appsec_patch.jinja` 内置了安全编码规范的 few-shot：`subprocess` 不过 shell /
 `shlex.quote()`、Bash 变量加引号、路径 `resolve()` 后校验 `is_relative_to`，并明确

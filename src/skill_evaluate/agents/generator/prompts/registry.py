@@ -11,13 +11,18 @@ _TEMPLATE_BY_CATEGORY = {
 }
 ```
 
-docs/dev/13 需要新增两个类别（渐进式披露动态探查），docs/dev/15 要加
-ADVERSARIAL、docs/dev/20 要加 MULTI_SKILL——照原样下去，每份文档都要回头改一次
-`agent.py`。改成注册表之后，新增一个类别只需要两步，**不碰生成器本体**：
+docs/dev/13 需要新增两个类别（渐进式披露动态探查），docs/dev/20 要加
+MULTI_SKILL——照原样下去，每份文档都要回头改一次 `agent.py`。改成注册表之后，
+新增一个类别只需要两步，**不碰生成器本体**：
 
 ```python
-register_generation_template(TestCaseCategory.ADVERSARIAL, "adversarial.jinja")
+register_generation_template(TestCaseCategory.MULTI_SKILL, "multi_skill.jinja")
 ```
+
+**一个例外：ADVERSARIAL 不走本表**。模块五（docs/dev/15）底下有七个攻击面，各有
+各的构造要求，共用一个模板会得到一份七种要求混在一起的超长 Prompt。它由
+`agents.attacker.AttackerAgent` 用**第二层**注册表（`attacker/playbook.py`）承担，
+本表在 `get_generation_template()` 的错误信息里点名了这件事。
 
 与 docs/dev/07 的 `ReviewTemplate` 注册机制同构，包括"重名直接报错"这一条取舍：
 静默覆盖会让"这批用例到底是哪套 Prompt 出的"无法追溯。
@@ -102,9 +107,12 @@ def get_generation_template(category: TestCaseCategory) -> GenerationTemplate:
         raise GenerationError(
             f"category={category.value!r} 尚无对应的生成模板；已注册："
             f"{sorted(c.value for c in GENERATION_TEMPLATE_REGISTRY)}。"
-            "ADVERSARIAL 由 docs/dev/15（Attacker Agent）、MULTI_SKILL 由 docs/dev/20 "
-            "各自新增模板并调用 register_generation_template()，接入方式见 "
-            "docs/dev/interfaces/06_generator_extension_points.md 第 3 节。"
+            "MULTI_SKILL 由 docs/dev/20 新增模板并调用 register_generation_template()，"
+            "接入方式见 docs/dev/interfaces/06_generator_extension_points.md 第 3 节。"
+            "ADVERSARIAL **不在本表登记**：模块五（docs/dev/15）底下有七个攻击面，"
+            "各有各的构造要求，塞进一个模板只会让模型挑最好写的两类反复出题。"
+            "对抗用例请改用 `agents.attacker.AttackerAgent`（它是 GeneratorAgent 的"
+            "子类，重写了 ADVERSARIAL 这一支，其余类别照常交给父类）。"
         )
     return template
 

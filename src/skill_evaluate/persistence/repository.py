@@ -187,6 +187,7 @@ def _test_case_values(case: TestCase) -> dict[str, object]:
         "negative_constraint_ids": case.negative_constraint_ids,
         "seed_anchor_id": case.seed_anchor_id,
         "probe_target_reference": case.probe_target_reference,
+        "attack_subtype": case.attack_subtype.value if case.attack_subtype else None,
         "generator_run_id": case.generator_run_id,
         "created_at": case.created_at,
     }
@@ -204,6 +205,7 @@ def _orm_to_test_case(row: TestCaseORM) -> TestCase:
         negative_constraint_ids=row.negative_constraint_ids or [],
         seed_anchor_id=row.seed_anchor_id,
         probe_target_reference=row.probe_target_reference,
+        attack_subtype=row.attack_subtype,
         generator_run_id=row.generator_run_id,
         created_at=row.created_at,
     )
@@ -390,6 +392,8 @@ class JudgeRepository:
                 temperature=verdict.temperature,
                 model=verdict.model,
                 created_at=verdict.created_at,
+                # docs/dev/15：只有声明了 to_severity 的模板会填这一列，其余为 NULL。
+                severity=verdict.severity.value if verdict.severity else None,
             )
             stmt = stmt.on_conflict_do_nothing(index_elements=["verdict_id"])
             await session.execute(stmt)
@@ -411,6 +415,7 @@ class JudgeRepository:
                     temperature=r.temperature,
                     model=r.model,
                     created_at=r.created_at,
+                    severity=r.severity,
                 )
                 for r in rows
             ]
@@ -446,6 +451,34 @@ class SecurityFindingRepository:
             )
             await session.execute(stmt)
             await session.commit()
+
+    async def list_by_case_ids(self, case_ids: list[str]) -> list[SecurityFinding]:
+        """按用例回读安全发现（docs/dev/15 第 11、12 节）。
+
+        两处用得到：优化闭环要把 `remediation_patch_id` 回填到对应的发现上（先读
+        回来再 `save()` 覆盖），报告节点要在图状态之外再核对一次落库结果。以
+        `case_id` 为口径而不是 run_id，是因为 `security_findings` 表本身不带
+        run_id——一条发现属于"这条用例在这份 Skill 上的问题"，跨运行是同一件事。
+        """
+        if not case_ids:
+            return []
+        async with new_session() as session:
+            rows = (
+                await session.execute(
+                    select(SecurityFindingORM).where(SecurityFindingORM.case_id.in_(case_ids))
+                )
+            ).scalars()
+            return [
+                SecurityFinding(
+                    finding_id=r.finding_id,
+                    case_id=r.case_id,
+                    category=r.category,
+                    severity=r.severity,
+                    evidence=r.evidence,
+                    remediation_patch_id=r.remediation_patch_id,
+                )
+                for r in rows
+            ]
 
     async def summarize_by_severity(self, skill_id: str | None = None) -> dict[str, int]:
         """供 docs/dev/05 `BenchmarkReport.security_findings_summary` 消费（docs/dev/15 落库时保证

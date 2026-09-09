@@ -67,6 +67,10 @@ class TestCaseORM(Base):
     # nullable 是刻意的——它只对两类新用例有意义，给其余几千条用例强塞一个空串
     # 会让"没有探查目标"和"探查目标是空路径"在查询里分不开。
     probe_target_reference: Mapped[str | None] = mapped_column(String, nullable=True)
+    # docs/dev/15：ADVERSARIAL 用例的攻击子类型（`AttackSubtype` 枚举值）。
+    # 建索引是因为五条探测支路每次都要按它切分用例子集，而对抗用例会随着
+    # 模块五反复补题而增长。其余类别恒为 NULL。
+    attack_subtype: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
     generator_run_id: Mapped[str] = mapped_column(String, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
@@ -134,6 +138,11 @@ class JudgeVerdictORM(Base):
     temperature: Mapped[float] = mapped_column(Float, nullable=False)
     model: Mapped[str] = mapped_column(String, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # docs/dev/15 第 10.1 节：声明了 `to_severity` 的评审模板（当前只有
+    # `security_severity_rating`）会回填严重级别。nullable 且无默认值——绝大多数
+    # 判定只有 pass/fail，给它们塞一个 "low" 会让"没有严重级别"和"判定为低危"
+    # 在查询里分不开。
+    severity: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class ConsensusResultORM(Base):

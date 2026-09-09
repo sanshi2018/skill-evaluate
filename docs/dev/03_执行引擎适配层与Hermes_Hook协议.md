@@ -161,6 +161,8 @@ NODE_BACKEND_ROUTING: dict[str, ExecutorBackendType] = {
 ## 6. 容错约定
 
 - `execute()` 内部捕获一切异常，统一转换为"失败态 `ExecutionTrace`"而非向上抛出——`final_response` 填入错误摘要，`actions` 末尾追加一条 `action_type="internal_error"` 记录原始异常堆栈（截断，见第 8 节防刷屏）。这保证 Judge Agent（08）永远面对结构一致的输入，不需要对"执行阶段崩了"和"Skill 本身执行失败"做两套处理逻辑——两者在 Trace 层面统一表示。
+  - **docs/dev/15 的一处追加约定**：**墙钟超时**这条路径记 `action_type="sandbox_timeout"` 而不是 `internal_error`（常量在 `executors/hermes_backend.py`：`ACTION_TYPE_SANDBOX_TIMEOUT` / `ACTION_TYPE_INTERNAL_ERROR`）。原因是模块五的 DoS 判定里**超时即通过**——墙钟约束成功阻断了挂起，这正是期望的结果；而沙箱崩溃且没给建设性报错是不通过。两者都记 `internal_error` 的话，这两个方向相反的结论就区分不出来，一次成功的防御会被读成一次失守。
+  - 实现上是 `build_failure_trace(..., timed_out=True)`，默认 `False` 保证既有调用方行为不变；**唯一**传 `True` 的是 `scripts/pending_hooks_reaper.py`（它就是墙钟超时那条路径）。其余维度对这两个取值一视同仁（都是"这次没跑成"），因此该改动向后兼容。
 - 沙箱创建失败（如 Hermes 服务不可用）单独抛出 `ExecutorBackendError`（继承自文档 01 定义的 `SkillEvaluateError`），由节点层决定是重试还是让整条流水线挂起（挂起策略在文档 09/22 细化）——这一类是"评测系统自身故障"，不应该被误判为"Skill 评测失败"。
 
 ## 7. 沙箱安全边界（工程约定，供 `HermesBackend` 及未来新后端遵守）
