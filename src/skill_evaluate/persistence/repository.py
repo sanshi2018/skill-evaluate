@@ -34,16 +34,23 @@ from skill_evaluate.persistence.models import (
     SecurityFindingORM,
     SkillORM,
     TestCaseORM,
+    TestCaseSuggestionORM,
     TestSuiteVersionORM,
 )
 from skill_evaluate.state.assertion import AssertionResult, AssertionSpec
 from skill_evaluate.state.capability import CapabilityTree
-from skill_evaluate.state.enums import AssertionStrategy, TestCaseCategory
+from skill_evaluate.state.enums import (
+    AssertionStrategy,
+    SuggestionStatus,
+    SuggestionType,
+    TestCaseCategory,
+)
 from skill_evaluate.state.golden import GoldenCase, JudgeMissRecord
 from skill_evaluate.state.judge import ConsensusResult, JudgeVerdict
 from skill_evaluate.state.patch import Patch, PatchApplicationResult
 from skill_evaluate.state.security import SecurityFinding
 from skill_evaluate.state.skill import SkillDefinition
+from skill_evaluate.state.suggestion import TestCaseSuggestion
 from skill_evaluate.state.test_case import TestCase, TestSuiteVersion
 from skill_evaluate.state.trace import ExecutionTrace
 
@@ -1074,3 +1081,112 @@ class PipelineStateRepository:
                 )
             ).scalars()
             return {r.node_name: r.retry_count for r in rows}
+
+
+# --------------------------------------------------------------------------- #
+# docs/dev/17：模块七——用例集瘦身与动态演进
+# --------------------------------------------------------------------------- #
+
+
+class TestCaseSuggestionRepository:
+    """`test_case_suggestions` 表存取（docs/dev/17 第 6.1 节）。
+
+    这张表是模块七与 docs/dev/22 审查工作台之间唯一的接口面：模块七**只**写
+    `pending`，工作台负责把它推进到 `confirmed`/`rejected` 并执行真正的淘汰动作。
+    因此本类刻意**不提供** `delete()` / `confirm()` 之类的方法——架构文档要求"硬性
+    的删除操作必须保留人类开发者的最终 Review 确认权限"，少写一个方法就少一条被
+    某次"顺手自动化一下"绕过这条约束的路径。`update_status()` 供工作台使用，它
+    拒绝把 `pending` 之外的状态再改回去（见该方法）。
+    """
+
+    async def save_if_absent(self, suggestion: TestCaseSuggestion) -> bool:
+        """写入一条建议；`(case_id, suggestion_type)` 已存在时**什么都不做**。
+
+        返回是否真的插入了新行，供节点统计"本轮新增了几条待办"——报告里"检出 3 条
+        孤儿用例"和"新增 3 条待办"是两个不同的数：连续三次评测检出同一条孤儿用例，
+        前者每次都是 1，后者只有第一次是 1。
+
+        去重靠库层唯一约束而不是"先 SELECT 再 INSERT"：多个 run 并发评测同一个
+        Skill 时，后者必然产生重复待办，而人在工作台上会看到同一条建议的若干副本。
+
+        已被人 `rejected` 的建议同样不会被重新插入——这是**期望行为**而非副作用：
+        人已经判断过"这条孤儿用例要留着"，评测系统不该每跑一次就把它重新推回待办
+        列表。要重开只能由工作台显式操作。
+        """
+        async with new_session() as session:
+            now = datetime.now(UTC)
+            stmt = pg_insert(TestCaseSuggestionORM).values(
+                suggestion_id=suggestion.suggestion_id,
+                case_id=suggestion.case_id,
+                suggestion_type=suggestion.suggestion_type.value,
+                reason=suggestion.reason,
+                status=suggestion.status.value,
+                created_at=suggestion.created_at,
+                updated_at=now,
+            )
+            stmt = stmt.on_conflict_do_nothing(constraint="uq_test_case_suggestions_case_type")
+            result = await session.execute(stmt)
+            await session.commit()
+            # `Result` 的静态类型上没有 rowcount（只有 `CursorResult` 有），与本文件
+            # 其余 `rowcount` 用法同一处理：忽略这一条，不为它把返回类型放宽。
+            return bool(result.rowcount)  # type: ignore[attr-defined]
+
+    async def list_by_status(
+        self, status: SuggestionStatus, *, suggestion_type: SuggestionType | None = None
+    ) -> list[TestCaseSuggestion]:
+        """按状态列出建议（工作台的主查询：`status=pending`）。"""
+        async with new_session() as session:
+            query = select(TestCaseSuggestionORM).where(
+                TestCaseSuggestionORM.status == status.value
+            )
+            if suggestion_type is not None:
+                query = query.where(TestCaseSuggestionORM.suggestion_type == suggestion_type.value)
+            rows = (await session.execute(query)).scalars()
+            return [_orm_to_suggestion(r) for r in rows]
+
+    async def list_by_case_ids(self, case_ids: list[str]) -> list[TestCaseSuggestion]:
+        """按用例 id 批量取建议，供节点判断"这些用例是不是已经有待办了"。"""
+        if not case_ids:
+            return []
+        async with new_session() as session:
+            rows = (
+                await session.execute(
+                    select(TestCaseSuggestionORM).where(TestCaseSuggestionORM.case_id.in_(case_ids))
+                )
+            ).scalars()
+            return [_orm_to_suggestion(r) for r in rows]
+
+    async def update_status(self, suggestion_id: str, status: SuggestionStatus) -> bool:
+        """人工决策落库（docs/dev/22 的工作台调用），返回是否真的改动了一行。
+
+        `WHERE status = 'pending'` 不是可有可无的：它让这个方法天然幂等，并且挡住
+        "把已经确认淘汰的建议改回 pending"这类会让审计线索断掉的操作。真正的重开
+        应当是一条新建议（新的 `suggestion_id`），而不是把旧记录改回去。
+        """
+        if status is SuggestionStatus.PENDING:
+            raise PersistenceError(
+                "update_status() 只用于把建议从 pending 推进到 confirmed/rejected；"
+                "把已决策的建议改回 pending 会让审计线索断掉，如需重开请新建一条建议。"
+            )
+        async with new_session() as session:
+            result = await session.execute(
+                update(TestCaseSuggestionORM)
+                .where(
+                    TestCaseSuggestionORM.suggestion_id == suggestion_id,
+                    TestCaseSuggestionORM.status == SuggestionStatus.PENDING.value,
+                )
+                .values(status=status.value, updated_at=datetime.now(UTC))
+            )
+            await session.commit()
+            return result.rowcount > 0  # type: ignore[attr-defined,no-any-return]
+
+
+def _orm_to_suggestion(row: TestCaseSuggestionORM) -> TestCaseSuggestion:
+    return TestCaseSuggestion(
+        suggestion_id=row.suggestion_id,
+        case_id=row.case_id,
+        suggestion_type=SuggestionType(row.suggestion_type),
+        reason=row.reason,
+        status=SuggestionStatus(row.status),
+        created_at=row.created_at,
+    )

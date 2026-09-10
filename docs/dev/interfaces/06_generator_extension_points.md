@@ -29,7 +29,7 @@ from skill_evaluate.agents.generator import CapabilityFocus, TestSuiteService
 focus = CapabilityFocus(
     capability_ids=["cap-3", "cap-7"],
     negative_constraint_ids=["neg-2"],
-    combinatorial_pairs=[("cap-3", "cap-9")],   # 模块十的组合矩阵盲区
+    combinatorial_pairs=[("cap-3", "cap-9")],   # 模块七/十的组合矩阵盲区
     # 必填：Prompt 里给模型看的是描述，不是裸 id。缺失的 id 会退化为 id 原文，
     # 那对模型没有任何信息量，生成出来的用例也就补不到真正的盲区。
     descriptions={
@@ -53,6 +53,14 @@ version = await TestSuiteService().incremental_patch(
 > - **调用方要接住 `GenerationError`**。"这个 Skill 还没有任何 active 用例集"会走到
 >   这条异常上，而覆盖率维度不阻断合并，为一次补题失败掀掉整条流水线不成比例。
 >   模块六的处理是标记补盲耗尽 + 把原因写进报告 findings。
+>
+> ✅ **`17` 是 `combinatorial_pairs` 的首个真实调用方**，实现见
+> `nodes/pruning/nodes.py::PruningPipeline.combinatorial_feedback_generation`。
+> 它顺带修好了 `prompts/_shared.jinja` 的一处遗漏：`focus_block` 宏原先只给
+> `capability_ids` 与 `negative_constraint_ids` 渲染了人类可读描述，**组合对那一段
+> 只渲染裸 id**。`capability_id` 是描述文本的哈希，模型看到两串哈希无法构造出真正
+> 同时用到两项能力的场景，于是组合覆盖率永远补不上去。填 `descriptions` 时记得
+> 把组合对里的两个 id 都填上。
 
 补生成数量默认按 focus 内容规模动态决定（每个能力/组合各一条正向、每个负向
 约束一条反向），不固定 8-10。确有把握时可用 `positive_count` / `negative_count`
@@ -70,7 +78,7 @@ version = await TestSuiteService().incremental_patch(
 | `auto_bootstrap` | `ensure_test_suite()` 首次生成 |
 | `manual_cli` | `skill-evaluate generate --force` |
 | `coverage_gap` | 模块六/七检测到盲区 |
-| `combinatorial_gap` | 模块十组合矩阵盲区 |
+| `combinatorial_gap` | **模块七组合矩阵盲区**（docs/dev/17，首个真实生产者）、模块十组合矩阵盲区 |
 | `cross_model_sampling` | 模块九验证集不足时定向生成 |
 
 ## 3. 新增用例类别（`20` MULTI_SKILL）

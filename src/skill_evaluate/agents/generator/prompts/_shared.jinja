@@ -48,8 +48,13 @@ negative_constraint_ids 中如实回填对应 id：
 {% for constraint_id in focus.negative_constraint_ids %}
 - 负向约束 `{{ constraint_id }}`：{{ focus.describe(constraint_id) }}
 {% endfor %}
+{# 组合对同样要给出人类可读描述（docs/dev/17 接入时补）：裸 id 是描述文本的哈希，
+   模型看到 `csv-cleaner:cap-3f9ac21b0d47` 无法据此构造出真正同时用到两项能力的
+   场景，只会写出一条泛泛的题，然后组合覆盖率永远补不上去。 #}
 {% for pair in focus.combinatorial_pairs %}
-- 组合场景：`{{ pair[0] }}` 与 `{{ pair[1] }}` 必须在**同一条**用例中同时出现
+- 组合场景：`{{ pair[0] }}`（{{ focus.describe(pair[0]) }}）与
+  `{{ pair[1] }}`（{{ focus.describe(pair[1]) }}）必须在**同一条**用例中同时出现，
+  并在该用例的 target_capability_ids 中同时回填这两个 id
 {% endfor %}
 
 若某项确实无法构造出合理用例，仍要输出一条用例并在其 rationale 中说明原因，

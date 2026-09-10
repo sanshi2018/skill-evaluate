@@ -7,6 +7,8 @@
 > 当前状态：`AnalyzerAgent`（抽取 + 映射）、`capability_id` 稳定性方案、五个节点、
 > 一条量化规则、带环子图与两道出口全部落地，有测试覆盖
 > （`tests/skill_evaluate/test_coverage.py` 45 条，不碰库、不发真实请求）。
+> **`17` 已按本文档接入完毕**（见第 4.4 节与
+> `docs/dev/interfaces/17_test_suite_pruning.md`）；`18`/`22`/`24` 的接入点仍然空着。
 
 ---
 
@@ -47,10 +49,13 @@ await graph.ainvoke({
 | `NODE_PREFIX` | `coverage` | 图节点名前缀 | 模块六/七/八共用 |
 | `DIMENSION` | `capability_coverage` | `DimensionResult.dimension` | **本文档独有** |
 
-**`17`/`18` 必须各自取一个新的 `DIMENSION` 值**（建议 `test_suite_pruning` /
-`weighted_coverage`）。`dimension_results` 的唯一约束是 `(run_id, dimension)`，
-三份文档若都写 `coverage_analysis`，后跑完的那个会把先跑完的**整行覆盖掉**，报告
-里只剩一个维度，而且不会有任何报错。
+**`17`/`18` 必须各自取一个新的 `DIMENSION` 值**。`dimension_results` 的唯一约束是
+`(run_id, dimension)`，三份文档若都写 `coverage_analysis`，后跑完的那个会把先跑完的
+**整行覆盖掉**，报告里只剩一个维度，而且不会有任何报错。
+
+> ✅ **`17` 已落地**，取的是 `test_suite_health`（不是这里当初建议的
+> `test_suite_pruning`）：它报告的不只是瘦身，还有组合覆盖缺口与孤儿用例，衡量的是
+> **测试集自身的健康度**。`18` 仍按建议取 `weighted_coverage`。
 
 `ROUTING_KEY` 与 `NODE_PREFIX` 则**要**沿用：三份文档共享同一棵能力树，在主图里被
 装配为同一个 `coverage` 分区，前缀不一致会让这件事在 `get_graph().draw()` 里看不
@@ -103,10 +108,21 @@ findings 里点名这个键，不是判 PASS——漏并了 schema 至少能从�
 提供自己的 `add_*_nodes(builder, deps)`，由主图（docs/dev/24）串起来：
 
 ```python
-cov_pipeline = add_coverage_nodes(builder, deps)          # 16
-pruning_pipeline = add_pruning_nodes(builder, deps)       # 17，复用同一份 deps
-builder.add_edge(TERMINAL_NODE, PRUNING_ENTRY_NODE)
+cov_pipeline = add_coverage_nodes(builder, deps)                             # 16
+add_pruning_nodes(builder, PruningDeps.from_coverage(cov_pipeline.deps))     # 17
+builder.add_edge(TERMINAL_NODE, pruning.ENTRY_NODE)
 ```
+
+> ✅ **`17` 已落地**（`nodes/pruning/`）。两条经验：
+>
+> - 它另建了一个包而不是塞进 `nodes/coverage/`：图上是同一个分区（节点名前缀仍是
+>   `coverage.`），代码上是三件独立的事。`18` 照此办理。
+> - **节点名也要查重，不只是 `DIMENSION`**。docs/dev/17 原文的收尾节点也叫
+>   `finalize_dimension_report`，与本文档撞名，实现改为 `finalize_pruning_report`。
+>   写新节点前先比一次 `nodes/coverage/nodes.py::NODE_NAMES` 与
+>   `nodes/pruning/nodes.py::NODE_NAMES`。
+> - 复用依赖的入口是 `PruningDeps.from_coverage(deps)`（逐字段搬运，共享已惰性
+>   构造好的 Agent 实例）。`18` 可以照抄这个写法。
 
 **顺序是有约束的**：`17`/`18` 的节点必须排在
 `coverage.finalize_dimension_report` **之后**。能力树要先建好、覆盖标记要先算完
@@ -114,7 +130,8 @@ builder.add_edge(TERMINAL_NODE, PRUNING_ENTRY_NODE)
 
 复用同一个 `CoverageDeps` 实例（`add_coverage_nodes()` 的返回值上有 `.deps`）比各自
 `CoverageDeps()` 更好：`AnalyzerAgent` 只实例化一次，避免两个实例各自持有不同的
-`trace_handle` 而让 Langfuse 上出现两条独立的 Agent 调用线。
+`trace_handle` 而让 Langfuse 上出现两条独立的 Agent 调用线。`17` 的做法是让
+`PruningDeps` 继承 `CoverageDeps` 并提供 `from_coverage()` 逐字段搬运，`18` 可照抄。
 
 ### 4.1 `18`：权重分级怎么原地更新 `tier`
 
@@ -163,17 +180,29 @@ P2 则相反；取中间档错得最不离谱。
 补盲侧不需要改：`CapabilityFocus` 已经有 `negative_constraint_ids` 与
 `descriptions` 字段，`feedback_driven_generation` 里多填一项即可。
 
-### 4.4 `17`：组合矩阵与冗余折叠
+### 4.4 `17`：组合矩阵与冗余折叠 —— ✅ 已落地
+
+接入文档见 `docs/dev/interfaces/17_test_suite_pruning.md`。下面三条保留原文，
+并标注实际结果：
 
 - `CapabilityTree.combinatorial_pairs_covered` 当前未使用，由 `17` 的组合矩阵分析
-  节点填充。
+  节点填充。→ **已填充**：内容是全部已覆盖组合对（每对已排序、只含仍在树上的 id、
+  不含 `COLD` 用例贡献的）。`18` 想把组合覆盖计入加权口径时直接读它即可。
 - 冗余用例折叠与孤儿用例检测的输入已经就位：`TestCase.target_capability_ids`
   由本文档首次真实写入，`CapabilityNode.covering_case_ids` 记录了反向索引。
 - `map_case_coverage` 已经把"指向已消失能力的旧绑定"识别出来并打日志
   （事件名 `coverage_orphan_case_binding`，字段 `case_id` / `capability_id`），
   但**不做任何淘汰动作**——那是 `17`"平滑淘汰"的职责（架构文档要求先向开发者发出
-  确认提示，而不是直接剔除）。要拿到完整的孤儿清单，重跑一次映射逻辑或直接比对
-  `TestCase.target_capability_ids` 与树上现存的 id 集合即可。
+  确认提示，而不是直接剔除）。→ **已实现**为 `coverage.orphan_case_detection`：
+  直接比对 `TestCase.target_capability_ids` 与树上现存 id 集合，判据是**全部**绑定
+  能力都已消失（部分消失的用例仍测得到其余能力，淘汰它是纯粹的损失），检出后写
+  `test_case_suggestions` 的**非阻塞**建议队列，仍然不做任何淘汰动作。
+
+> ⚠️ **`17` 落地后新增的一条全局事实：`TestCase.split` 现在会被评测流水线改写。**
+> 冗余折叠会把同簇的非代表用例降级为 `DatasetSplit.COLD`，本项目从此有了 `COLD`
+> 用例。按 `TRAIN`/`VALIDATION` 过滤的消费方（文档 11/13/15 等）**不需要改**——
+> 那正是文档 02 设计 `COLD` 时的"惰性过滤"意图；但排在 `coverage` 分区之后的维度
+> 会看到一个比之前小的活跃用例集，装配主图时要意识到这一点。
 
 ---
 

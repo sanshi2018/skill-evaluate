@@ -385,3 +385,40 @@ class NodeRetryCountORM(Base):
     node_name: Mapped[str] = mapped_column(String, nullable=False)
     retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+# --------------------------------------------------------------------------- #
+# docs/dev/17：模块七——用例集瘦身与动态演进
+# --------------------------------------------------------------------------- #
+
+
+class TestCaseSuggestionORM(Base):
+    """孤儿用例等"建议人工处置"的非阻塞待办（docs/dev/17 第 6.1 节）。
+
+    与 `human_approvals` 的分工见 `state/suggestion.py` 的模块头：那张表是**阻塞式**
+    挂起点的账本（以 `wait_key` 为锚、绑一次运行），本表是**非阻塞**建议队列
+    （以 `case_id` 为锚、跨运行长期存活）。
+
+    `(case_id, suggestion_type)` 唯一：同一条孤儿用例连续三次评测都会被检出，但人
+    只需要处理一次。把去重放在库层面而不是节点里先查后写，是因为多个 run 可能并发
+    跑同一个 Skill，"先 SELECT 再 INSERT"这条路径在并发下必然产生重复待办。
+
+    没有 `run_id` 列也是刻意的：建议的生命周期比一次运行长得多（人可能过一周才来
+    处理），挂上 run_id 会诱使工作台按运行过滤，从而漏掉上周检出、至今没人管的那些。
+    要追溯"哪次运行检出的"，看结构化日志事件 `pruning_orphan_case_detected`。
+    """
+
+    __tablename__ = "test_case_suggestions"
+    __table_args__ = (
+        UniqueConstraint("case_id", "suggestion_type", name="uq_test_case_suggestions_case_type"),
+    )
+
+    suggestion_id: Mapped[str] = mapped_column(String, primary_key=True)
+    case_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    suggestion_type: Mapped[str] = mapped_column(String, nullable=False)
+    reason: Mapped[str] = mapped_column(String, nullable=False)
+    # `status` 建索引：工作台的主查询是"列出所有 pending 的建议"，而 pending 只占
+    # 全表的一小部分（处理过的会长期留存作审计），这正是索引最划算的形状。
+    status: Mapped[str] = mapped_column(String, default="pending", index=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

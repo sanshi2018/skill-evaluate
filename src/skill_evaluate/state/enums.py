@@ -161,3 +161,30 @@ class HookWaitStatus(StrEnum):
 
     WAITING = "waiting"
     RESOLVED = "resolved"
+
+
+class SuggestionType(StrEnum):
+    """`test_case_suggestions` 的建议类型（docs/dev/17 第 6.1 节）。
+
+    模块七只产出 `ORPHAN_RETIREMENT` 一种；做成枚举而不是裸字符串，是因为这张表
+    的消费方是 docs/dev/22 的审查工作台——它要按类型渲染不同的操作按钮
+    （"淘汰孤儿用例"和将来可能出现的"合并重复用例"要人确认的东西完全不同），
+    而按裸字符串分支意味着新增类型时工作台会静默走进 else 分支。
+    """
+
+    ORPHAN_RETIREMENT = "orphan_retirement"  # 绑定的声明能力已从最新能力树中消失
+
+
+class SuggestionStatus(StrEnum):
+    """一条用例处置建议的人工决策状态（docs/dev/17 第 6.1 节）。
+
+    ⚠️ 三态里**没有** "applied"：`CONFIRMED` 的语义是"人已确认可以淘汰"，真正的
+    淘汰动作（从活跃用例集移除/归档）属于 docs/dev/22 的范畴。模块七只写 `PENDING`，
+    另外两态由工作台写入——这正是架构文档"硬性的删除操作必须保留人类开发者的最终
+    Review 确认权限"的落点：评测流水线里不存在任何把状态推进到 `CONFIRMED` 的代码
+    路径。
+    """
+
+    PENDING = "pending"
+    CONFIRMED = "confirmed"
+    REJECTED = "rejected"
