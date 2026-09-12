@@ -44,5 +44,9 @@
 - 十条句式雷同、只换了名词的提问 —— 多样性为零，等于只出了一道题。
 
 {{ shared.focus_block(focus) }}
+{# 负向约束的反事实场景指令只挂在正向模板上（docs/dev/18 第 4 节）：诱导踩坑的
+   题是**该由本 Skill 处理**的真实请求，属于正向用例；反向模板出的是"不该触发"
+   的近脱靶题，把反事实场景塞进去会自相矛盾。 #}
+{{ shared.counterfactual_block(focus) }}
 {{ shared.seed_block(seed_texts) }}
 {{ shared.output_contract(count) }}

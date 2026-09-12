@@ -37,6 +37,12 @@ _HASH_LENGTH = 12
 # id 的中缀，让 `skill-x:cap-3f9a…` 一眼能看出是能力节点（而不是用例、补丁等）。
 CAPABILITY_ID_INFIX = "cap"
 
+# 负向约束（模块八 / docs/dev/18 第 3 节）的中缀。与能力节点分开一个中缀，是因为
+# 两者在 `TestCase` 上落在**不同字段**（`target_capability_ids` /
+# `negative_constraint_ids`），混用同一个中缀时，一旦某处把两个列表填反，表现是
+# "覆盖率与约束覆盖率同时不对"，而没有任何一处会报错；带中缀则一眼看得出。
+CONSTRAINT_ID_INFIX = "neg"
+
 # 归一化时统一收敛的标点：全角/半角、直引号/弯引号在两次抽取之间经常变化，
 # 但它们从不改变能力语义。
 _PUNCTUATION_FOLD = str.maketrans(
@@ -87,6 +93,22 @@ def build_capability_id(skill_id: str, description: str) -> str:
     return f"{skill_id}:{CAPABILITY_ID_INFIX}-{digest}"
 
 
+def build_constraint_id(skill_id: str, description: str) -> str:
+    """生成形如 `<skill_id>:neg-<hash12>` 的稳定负向约束 id（docs/dev/18 第 3 节）。
+
+    与 `build_capability_id()` **共用同一套归一化与哈希**（只换中缀），理由见
+    `docs/dev/interfaces/16` 第 4.3 节：`TestCase.negative_constraint_ids` 与
+    `target_capability_ids` 一样是长期存活的绑定，id 必须是"约束语义本身的函数"
+    而不是抽取顺序的函数。
+
+    两个 id 空间因此天然不会互相碰撞（中缀不同），同一句话即使既被当成能力又被
+    当成约束抽出来，也会得到两个不同的 id。
+    """
+    normalized = normalize_capability_text(description)
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:_HASH_LENGTH]
+    return f"{skill_id}:{CONSTRAINT_ID_INFIX}-{digest}"
+
+
 def build_capability_tree_id(skill_id: str, skill_version_ref: str) -> str:
     """`PipelineState.capability_tree_id` 的取值（docs/dev/16 第 4 节）。
 
@@ -115,8 +137,10 @@ def parse_capability_tree_id(tree_id: str) -> tuple[str, str]:
 
 __all__ = [
     "CAPABILITY_ID_INFIX",
+    "CONSTRAINT_ID_INFIX",
     "build_capability_id",
     "build_capability_tree_id",
+    "build_constraint_id",
     "normalize_capability_text",
     "parse_capability_tree_id",
 ]

@@ -72,9 +72,13 @@ from skill_evaluate.nodes.pruning.state import (
     KEY_UNCOVERED_PAIRS,
     PruningState,
 )
+
+# 组合对的排序/归一由模块八的纯函数模块统一提供（docs/dev/18 第 6 节把本维度的
+# "过渡截断策略"正式升级为它）。这条依赖方向是 17 → 18，不构成环：
+# `priority.py` 只依赖 `state/capability.py`，不反过来导入本包。
+from skill_evaluate.nodes.weighted_coverage.priority import as_sorted_pair, prioritized_pairs
 from skill_evaluate.state.capability import CapabilityTree
 from skill_evaluate.state.enums import (
-    CapabilityTier,
     DatasetSplit,
     JudgeVerdictStatus,
     SuggestionStatus,
@@ -110,13 +114,6 @@ TERMINAL_NODE = NODE_NAMES["finalize_pruning_report"]
 # 因为多了三个字就压过 `split=TRAIN` 这条更有意义的偏好。
 _LENGTH_BUCKET_RATIO = 1.2
 
-# 组合矩阵截断时的能力权重次序。文档 18 落地前所有节点都是占位的 P1，此时这张表
-# 对排序没有任何影响（见 `_tier_ranked()`），报告会如实标注"未做优先级筛选"。
-_TIER_RANK = {
-    CapabilityTier.P0_CORE: 0,
-    CapabilityTier.P1_CONDITIONAL: 1,
-    CapabilityTier.P2_DEFENSIVE: 2,
-}
 
 
 class PruningPipeline:
@@ -247,9 +244,12 @@ class PruningPipeline:
         2. **组合爆炸靠截断而不是采样**。两两组合是 N² 级别（20 个能力就是 190 对）。
            超过 `max_capability_pairs_for_matrix` 时按能力权重排序后截断取前 N 对。
            不采样的理由是可比性：随机采样会让同一份测试集在两次运行中得到不同的组合
-           覆盖率，那个数字就再也没法拿来比较了。权重分级（文档 18）落地前所有 tier
-           都是占位值，此时排序退化为按 id 排——报告会如实标注"未做优先级筛选的截断
-           分析"，这是过渡策略而非最终形态。
+           覆盖率，那个数字就再也没法拿来比较了。排序实现与模块八共用
+           （`nodes/weighted_coverage/priority.py`）；但本节点排在模块八的分级节点
+           **之前**，因此同一轮里树上通常还是占位 tier，排序退化为按 id 排，报告会
+           如实标注"未做优先级筛选的截断分析"。真实分级后的缺口次序由模块八的
+           `upgrade_combinatorial_priority` 当轮重排给出，本节点则在**下一轮**评测
+           里自然用上真实分级。
 
         3. **只统计仍在能力树上的 id**。用例可能带着指向已消失能力的旧绑定
            （那正是下一个节点要处理的孤儿），把它们算进 `combinatorial_pairs_covered`
@@ -641,7 +641,7 @@ class PruningPipeline:
         tree_id = state.get("capability_tree_id")
         if not tree_id:
             raise PersistenceError(
-                f"状态里没有 capability_tree_id：模块七的节点必须排在模块六的 "
+                "状态里没有 capability_tree_id：模块七的节点必须排在模块六的 "
                 "`coverage.finalize_dimension_report` 之后（docs/dev/interfaces/16 第 4 节）。"
             )
         skill_id, version_ref = parse_capability_tree_id(str(tree_id))
@@ -700,40 +700,43 @@ def _length_bucket(prompt: str) -> int:
 def _tier_ranked(tree: CapabilityTree) -> bool:
     """能力权重分级是否已经有意义。
 
-    文档 18 落地前，`AnalyzerAgent` 给所有节点填的都是同一个占位 tier
-    （`agents.analyzer.service.PLACEHOLDER_TIER`）。判据用"树上是否出现了不止一档
-    tier"而不是"是否等于那个占位常量"：前者不依赖占位值具体取哪一档，文档 18 若改用
-    别的占位策略也不会让这里悄悄给出错误答案。
+    判据是"树上出现了不止一档 tier"，实现收敛到
+    `CapabilityTree.tier_grading_applied()`——模块八落地后同一个问题在两处各判一次
+    会慢慢漂移，而这个布尔值决定的是报告里那句"本次截断做没做优先级筛选"，两处
+    给出不同答案时没有任何一处会报错。
+
+    ⚠️ 模块八（docs/dev/18）的分级节点排在**本维度之后**（16 → 17 → 18），因此在
+    同一轮评测里本函数**通常返回 False**：本节点跑的时候树上还是占位 tier。分级
+    落库之后，**下一轮**评测的本节点才会看到真实分级并返回 True。本轮真实分级后的
+    组合缺口优先级由模块八的 `upgrade_combinatorial_priority` 节点重排一次给出。
     """
-    return len({node.tier for node in tree.nodes}) > 1
+    return tree.tier_grading_applied()
 
 
 def _prioritized_pairs(tree: CapabilityTree) -> list[tuple[str, str]]:
     """全部两两组合，按"应当优先分析"的次序排列。
 
-    排序键 `(tier 之和, 两者中较低的优先级, id 对)`：P0×P0 最前，其次 P0×P1，
-    再次 P1×P1（`max` 更小）而后 P0×P2，依此类推。docs/dev/17 第 5 节要求超限时
-    "只分析 P0 核心能力两两组合"，按本序截断即可自然得到这个效果。
+    实现委托给 `nodes/weighted_coverage/priority.py`：docs/dev/18 第 6 节把这段
+    "过渡截断策略"正式升级为按 `TIER_WEIGHTS` 之和排序（P0×P0 = 1.2 最前，
+    P2×P2 = 0.2 最后），并与模块八的缺口重排共用同一个实现——同一个"优先级怎么
+    定"的问题必须只有一个答案，否则"为什么这对组合被截断掉了"永远解释不清。
 
-    最后一项 `id 对` 保证**确定性**：同一棵树每次给出同一个次序，截断范围因此稳定，
-    组合覆盖率才可以在两次运行之间比较。
+    docs/dev/17 落地时这里是按"档位序号之和"排的，与按权重之和排在一处有分歧
+    （P0×P2 vs P1×P1 谁优先）。两种答案都说得通，统一采用 docs/dev/18 定的那种。
     """
-    ranked = [(_TIER_RANK[node.tier], node.capability_id) for node in tree.nodes]
-    ranked.sort()
-    pairs = itertools.combinations(ranked, 2)
-    ordered = sorted(pairs, key=lambda p: (p[0][0] + p[1][0], max(p[0][0], p[1][0]), p))
-    return [(a[1], b[1]) for a, b in ordered]
+    return prioritized_pairs(tree)
 
 
 def _as_sorted_pair(pair: frozenset[str]) -> tuple[str, str]:
     """`frozenset` → 有序二元组。
 
     落库的组合对必须**有序**：`(a, b)` 和 `(b, a)` 是同一对，不排序的话同一份数据
-    在两次运行中会写出两种不同的 JSON，读它的人（文档 18 的加权覆盖率、docs/dev/22
-    的展示）就得各自再做一次归一。
+    在两次运行中会写出两种不同的 JSON，读它的人（模块八的加权覆盖率、docs/dev/22
+    的展示）就得各自再做一次归一。归一实现同样与模块八共用一份
+    （`priority.as_sorted_pair`）。
     """
     first, second = sorted(pair)
-    return (first, second)
+    return as_sorted_pair(first, second)
 
 
 def _uncovered_pairs(state: PruningState) -> list[tuple[str, str]]:

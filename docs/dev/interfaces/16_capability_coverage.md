@@ -55,7 +55,8 @@ await graph.ainvoke({
 
 > ✅ **`17` 已落地**，取的是 `test_suite_health`（不是这里当初建议的
 > `test_suite_pruning`）：它报告的不只是瘦身，还有组合覆盖缺口与孤儿用例，衡量的是
-> **测试集自身的健康度**。`18` 仍按建议取 `weighted_coverage`。
+> **测试集自身的健康度**。
+> ✅ **`18` 已落地**，按建议取了 `weighted_coverage`。三个维度名互不相同。
 
 `ROUTING_KEY` 与 `NODE_PREFIX` 则**要**沿用：三份文档共享同一棵能力树，在主图里被
 装配为同一个 `coverage` 分区，前缀不一致会让这件事在 `get_graph().draw()` 里看不
@@ -133,9 +134,21 @@ builder.add_edge(TERMINAL_NODE, pruning.ENTRY_NODE)
 `trace_handle` 而让 Langfuse 上出现两条独立的 Agent 调用线。`17` 的做法是让
 `PruningDeps` 继承 `CoverageDeps` 并提供 `from_coverage()` 逐字段搬运，`18` 可照抄。
 
-### 4.1 `18`：权重分级怎么原地更新 `tier`
+### 4.1 `18`：权重分级怎么原地更新 `tier` —— ✅ 已落地
 
-当前所有 `CapabilityNode.tier` 都是占位值
+> ✅ 实现是 `AnalyzerAgent.classify_tiers()`（新增模板
+> `prompts/classify_tiers.jinja`），由 `coverage.extract_tier_and_negative_constraints`
+> 节点调用并 `CapabilityRepository.save()`。下面三条原文全部按预期兑现，另有两条
+> 落地时补上的口径：**模型回填了清单外的 id 一律丢弃**（接受它等于让一次分级调用
+> 悄悄改写能力树结构），**模型漏判的节点保留原值**（默认填 P0 会让加权覆盖率朝最
+> 激进的口径偏）。
+>
+> ⚠️ 一条全局事实：**每次重新抽取能力树都会把真实分级重置回占位值**（落库是整树
+> upsert）。这不是 bug——分级依据的是 SKILL.md 正文，正文重抽一遍，分级就该重来
+> 一遍；模块八排在模块六之后，每轮都会重新分级。但它意味着**模块六/七在同一轮里
+> 读到的 tier 始终是占位值**（见 4.4 下方对模块七截断策略的说明）。
+
+抽取阶段所有 `CapabilityNode.tier` 都是占位值
 `agents.analyzer.service.PLACEHOLDER_TIER`（`P1_CONDITIONAL`），**不代表真实分级**。
 
 接入方式：在 `AnalyzerAgent` 上新增一个分级子任务方法（新增模板文件 +
@@ -150,14 +163,26 @@ builder.add_edge(TERMINAL_NODE, pruning.ENTRY_NODE)
 全填 P0 会让接入前的任何一次加权计算都得出"全部是核心能力"这一最激进的口径，全填
 P2 则相反；取中间档错得最不离谱。
 
-### 4.2 `18`：怎么把覆盖率换成加权版本
+### 4.2 `18`：怎么把覆盖率换成加权版本 —— ✅ 已落地
+
+> ✅ 结果与本节的约定一致，但落点比"改函数体"更少：**规则函数体没动**——它一直
+> 就只是一次阈值比较，加权与否体现在传进来的 `coverage_ratio` 是怎么算出来的。
+> 实际改的是三处：
+>
+> 1. `CapabilityTree.weighted_coverage()` 成为唯一的覆盖率算法，
+>    `blind_spot_detection` 也改成调它；
+> 2. `coverage_inputs()` 的 `tier_weighted` 从写死的 False 改成**必填参数**，
+>    取值是新增的 `CapabilityTree.tier_grading_applied()`（模块六跑在分级之前传
+>    False，模块八跑在分级之后传 True）——而不是无条件翻成 True，否则模块六那条
+>    "其实没分过级"的记录会看起来像加权判定；
+> 3. 模块八用**同一条规则名**再判一次，两条记录靠 `subject_id` 前缀分开
+>    （`coverage:` / `wcoverage:`）。
 
 `capability_coverage_threshold` 这条规则的**实现体**要被替换，**规则名不变**，
 调用方（`blind_spot_detection` 节点）不需要修改——这是 docs/dev/16 第 9 节的约定。
 
 落到代码上：**直接改写 `nodes/coverage/rules.py::_capability_coverage_threshold`
-的函数体**，以及 `coverage_inputs()` 里 `tier_weighted` 的取值（翻成 True，让历史
-判定记录仍能区分是拿哪种口径算的）。
+的函数体**，以及 `coverage_inputs()` 里 `tier_weighted` 的取值。
 
 **不要**在 `nodes/weighted_coverage/rules.py` 里再 `@register_rule` 一条同名规则——
 `register_rule()` 遇到重名会抛 `JudgeRuleError`。这是有意的：静默覆盖会让"这次判定
@@ -167,9 +192,20 @@ P2 则相反；取中间档错得最不离谱。
 `tree.weighted_coverage()`），以及 `finalize_dimension_report` 的比较——那两处目前
 都用未加权的简单比例，规则改了而算法没改的话，判定与报告会给出两个不同的数。
 
-### 4.3 `18`：负向约束抽取
+### 4.3 `18`：负向约束抽取 —— ✅ 已落地
 
-`CapabilityTree.negative_constraints` 当前恒为空列表。`AnalyzerAgent` 里加一个
+> ✅ 实现是 `AnalyzerAgent.extract_negative_constraints()` +
+> `build_constraint_id()`（`<skill_id>:neg-<hash12>`，与 `build_capability_id()`
+> 共用归一化与哈希、只换中缀）。补盲侧确如本节所说**不需要改**：
+> `constraint_feedback_generation` 只是多填了 `CapabilityFocus.negative_constraint_ids`。
+>
+> 落地时多出的一处**不在原文预期内**、值得所有调用 `incremental_patch()` 的人
+> 知道：`incremental_patch()` 的默认映射是"每条负向约束出一条 **NEGATIVE** 用例"，
+> 而本项目的 `NEGATIVE` 指"不该触发本 Skill"的近脱靶题——反事实用例恰恰是**该由
+> 本 Skill 处理**的真实请求（只是场景里埋了坑）。因此模块八显式传
+> `positive_count=约束条数` / `negative_count=0`，让它走正向模板。
+
+`CapabilityTree.negative_constraints` 抽取阶段恒为空列表。`AnalyzerAgent` 里加一个
 反事实约束抽取子任务（`SKILL.md` 的 Gotchas / 避坑指南 → `NegativeConstraint`），
 写回同一棵树。
 

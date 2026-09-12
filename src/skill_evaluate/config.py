@@ -310,6 +310,29 @@ class CoverageSettings(BaseSettings):
     # 把测试集撑爆的同时也把 Generator 的账单撑爆。
     max_combinatorial_patch_per_round: int = 5
 
+    # ---- docs/dev/18（模块八：加权覆盖率与隐式边界追踪）追加 ----
+
+    # 负向约束覆盖判定的**单轮 LLM 调用上限**（docs/dev/18 第 4 节）。
+    #
+    # 这一步是"每条约束 × 每条候选用例"的二维扫描：5 条约束 × 40 条用例 = 200 次
+    # 裁判调用。约束数与用例数各自增长时乘积会很快失控，因此设一个显式的总闸门。
+    #
+    # 超限时**不是**把剩下的判成"未覆盖"——那会凭空虚增一批补题需求（而每条补题
+    # 又是一次生成调用）。剩余的判定记为"未判定"，如实写进报告，交由下一轮评测
+    # 继续（与模块七组合矩阵截断同一种"如实标注、不假装算完了"的处理）。
+    #
+    # 已经带着 `negative_constraint_ids` 绑定的用例不消耗配额：那是出题时就回填
+    # 好的事实，没有什么要判的。
+    max_constraint_probe_calls: int = 200
+
+    # 可追溯性矩阵制品（`traceability_matrix.json` / `.csv`）的输出根目录。
+    #
+    # 最终路径是 `<artifacts_dir>/<run_id>/traceability_matrix.{json,csv}`。做成
+    # 配置项而不是写死 "artifacts"：CI 各家的工作目录约定不同，而这两份文件要被
+    # `upload-artifact` 一类的步骤按路径捞走（docs/dev/24 配置），路径写死会逼着
+    # 那一步去猜。
+    artifacts_dir: str = "artifacts"
+
 
 class JudgeSettings(BaseSettings):
     """Judge Agent 的可信度机制参数（docs/dev/08）。

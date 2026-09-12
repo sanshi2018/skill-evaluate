@@ -330,6 +330,20 @@ class CoveragePipeline:
         它并不意味着"测得很全"，而意味着"根本没抽出能力"。因此把节点数一并放进
         状态（`KEY_TREE_NODE_COUNT`），由 finalize 据此判 `NEEDS_HUMAN_REVIEW` 而
         不是 PASS——详见 `finalize_dimension_report`。
+
+        ## 覆盖率算法：`CapabilityTree.weighted_coverage()`（docs/dev/18 接入）
+
+        docs/dev/16 落地时这里算的是未加权的简单比例；docs/dev/18 落地后改为调
+        `weighted_coverage()`，与量化规则、与模块八的重算口径**共用同一个算法**。
+
+        本节点跑在权重分级**之前**（分级是模块八子图的第一个节点，排在模块六全部
+        跑完之后），因此此刻树上全是占位 tier，加权结果与等权结果数值相同。即便
+        如此也要调同一个方法：分级一旦生效，"判定用的算法"与"报告里写的数"就必须
+        是同一个来源——`docs/dev/interfaces/16` 第 4.2 节点名了这条坑（规则改了而
+        节点里的算法没改，判定与报告会给出两个不同的数）。
+
+        口径标记 `tier_weighted` 按树的实际状态传（`tier_grading_applied()`），
+        不写死：写死 True 会让这条"其实没分过级"的记录看起来像加权判定。
         """
         run_id = str(state["run_id"])
         tree = await self._load_tree(state)
@@ -340,12 +354,20 @@ class CoveragePipeline:
             for node in tree.nodes
             if not node.covered
         ]
-        coverage_ratio = 1 - len(blind_spots) / len(tree.nodes) if tree.nodes else 1.0
+        # 空树取 1.0 而不是 weighted_coverage() 的 0.0：docs/dev/16 第 6 节的公式
+        # 如此，且"没有盲区"与"没有能力"由 finalize 靠节点数区分（见上）。把空树
+        # 判成 0% 会让它显示为一个刺眼却同样错误的分数，并直接触发一轮补不出任何
+        # 东西的补盲回环。
+        coverage_ratio = tree.weighted_coverage() if tree.nodes else 1.0
 
         verdict = self.deps.judge().quantitative_verdict(
             subject_id=f"{SUBJECT_PREFIX_COVERAGE}{tree.skill_id}",
             rule_name=rules.RULE_CAPABILITY_COVERAGE,
-            inputs=rules.coverage_inputs(coverage_ratio=coverage_ratio, threshold=threshold),
+            inputs=rules.coverage_inputs(
+                coverage_ratio=coverage_ratio,
+                threshold=threshold,
+                tier_weighted=tree.tier_grading_applied(),
+            ),
         )
         # `quantitative_verdict()` 按约定不落库（docs/dev/interfaces/08 第 1 节），
         # 但本维度每轮只产生一条判定，而状态里要带走它的 id——不存的话那个 id 指向
@@ -361,6 +383,7 @@ class CoveragePipeline:
             blind_spot_count=len(blind_spots),
             coverage_ratio=round(coverage_ratio, 4),
             threshold=threshold,
+            tier_weighted=tree.tier_grading_applied(),
             status=verdict.status.value,
         )
         return {
@@ -506,6 +529,9 @@ class CoveragePipeline:
                 f"能力覆盖率 {coverage_ratio:.1%}（阈值 {threshold:.0%}）："
                 f"{node_count - len(blind_spots)}/{node_count} 项声明能力被正向用例覆盖，"
                 f"参与映射的正向用例 {_int_from_state(state, KEY_MAPPED_CASE_COUNT)} 条。"
+                # 本维度跑在权重分级之前，这里的百分比恒为等权口径；加权口径由
+                # 模块八（docs/dev/18）在自己的 `weighted_coverage` 维度里另算一份。
+                "（等权口径：每项能力权重相同；按重要性加权的口径见 weighted_coverage 维度。）"
             )
 
         findings.extend(

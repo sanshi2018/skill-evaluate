@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -33,6 +35,49 @@ class CapabilityExtraction(BaseModel):
     capabilities: list[ExtractedCapability] = Field(default_factory=list)
 
 
+class TierAssignment(BaseModel):
+    """模型给一项能力定的权重档位（模块八 / docs/dev/18 第 3 节）。
+
+    `capability_id` 由调用方在 Prompt 里给定、模型原样回填，**不是**模型自己编的
+    ——分级是"给已有节点打标签"，不是重新抽一棵树。回填不上号的条目会被调用方
+    丢弃并记日志（与用例映射同一处理）。
+
+    `tier` 用 Literal 而不是直接用 `CapabilityTier`：Schema 层是 LLM 的输出契约，
+    模型返回 "P0"/"core" 这类没约定过的写法时，应当在 Pydantic 校验阶段就失败并
+    触发重试，而不是被一个宽松的枚举构造悄悄接受或当场崩掉（与 docs/dev/15 的
+    `SecuritySeverityRatingOutput.severity` 同一条理由）。
+    """
+
+    capability_id: str
+    tier: Literal["p0_core", "p1_conditional", "p2_defensive"]
+    # 为什么定这一档。不落库，但进结构化日志：分级会改变加权覆盖率这个最终分数，
+    # 出现可疑分数时，这是唯一能回溯"模型当时怎么想的"的线索。
+    reason: str = ""
+
+
+class TierClassification(BaseModel):
+    """一次权重分级调用的完整输出。"""
+
+    assignments: list[TierAssignment] = Field(default_factory=list)
+
+
+class ExtractedNegativeConstraint(BaseModel):
+    """模型抽出的一条负向约束（"必须避免 / 不能 / 禁止"型规则）。"""
+
+    description: str
+    # 与 `ExtractedCapability.evidence_quote` 同样的作用与同样的硬要求：必须逐字
+    # 摘自 SKILL.md。负向约束比能力更容易被"脑补"——模型很清楚"数据库查询一般
+    # 要注意 SQL 注入"，但那是常识而不是**这份 Skill 声明过的**约束，把它当成
+    # 追踪对象会逼着系统去为一条根本没写在文档里的规则出题。
+    evidence_quote: str
+
+
+class NegativeConstraintExtraction(BaseModel):
+    """一次负向约束抽取调用的完整输出。"""
+
+    constraints: list[ExtractedNegativeConstraint] = Field(default_factory=list)
+
+
 class CaseCapabilityMapping(BaseModel):
     """一条用例激活了哪些能力（双向追溯矩阵的一格）。"""
 
@@ -44,4 +89,12 @@ class CaseCapabilityMapping(BaseModel):
     reasoning: str = ""
 
 
-__all__ = ["CapabilityExtraction", "CaseCapabilityMapping", "ExtractedCapability"]
+__all__ = [
+    "CapabilityExtraction",
+    "CaseCapabilityMapping",
+    "ExtractedCapability",
+    "ExtractedNegativeConstraint",
+    "NegativeConstraintExtraction",
+    "TierAssignment",
+    "TierClassification",
+]

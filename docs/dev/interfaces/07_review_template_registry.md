@@ -17,6 +17,26 @@
 | `linguistic_smell` | 模块九 / `19` | `skill_md` | `LinguisticSmellOutput` |
 | `control_calibration` | 模块三 / `13` | `skill_md` | `ControlCalibrationOutput` |
 
+### 后续文档新增的模板（各自一个文件，`builtin.py` 不动）
+
+| key | 归属模块 | 必需的 `content` 变量 | 输出 Schema | 注册文件 |
+|---|---|---|---|---|
+| `roi_comparison` | 模块三 / `13` | 见 `templates/instruction_control.py` | `RoiComparisonOutput` | `instruction_control.py` |
+| `trace_efficiency` | 模块三 / `13` | `actions`, `final_response` | `TraceEfficiencyOutput` | `instruction_control.py` |
+| `prompt_injection_defense` | 模块五 / `15` | `skill_description`, `prompt`, `actions`, `final_response` | `PromptInjectionDefenseOutput` | `security.py` |
+| `security_severity_rating` | 模块五 / `15` | `category`, `initial_severity`, `evidence` | `SecuritySeverityRatingOutput` | `security.py` |
+| `negative_constraint_probe` | 模块八 / `18` | `constraint_description`, `case_category`, `case_prompt`, `case_expected_output` | `NegativeConstraintProbeOutput` | `weighted_coverage.py` |
+
+> `negative_constraint_probe` 是全项目**唯一一个判定对象是"我们自己出的题"**的
+> 模板（其余都在判被测 Skill）：它回答"这条用例算不算真的诱导了智能体去踩这条
+> 禁令"。因此它的 `fail` 不进安全发现、不阻断合并，只驱动补一条反事实用例。
+>
+> 它也是第一个**显式覆盖通用规则第 2 条**的模板：`_prefix.jinja` 要求"判不准时
+> 给 pass"，而这里反过来要求"判不准时给 fail"，理由写在模板正文末尾（两类误判的
+> 代价不对称：误判 pass 会让一条真实盲区被永久标记为已覆盖且报告上看不出异常）。
+> 需要反向口径的模板照此办理——把覆盖写在 `common_rules()` **之后**，否则通用规则
+> 会成为最后一句话。
+
 调用方式：
 
 ```python

@@ -56,6 +56,11 @@ version = await TestSuiteService().incremental_patch(
 >
 > ✅ **`17` 是 `combinatorial_pairs` 的首个真实调用方**，实现见
 > `nodes/pruning/nodes.py::PruningPipeline.combinatorial_feedback_generation`。
+> `18` 又在 `prompts/_shared.jinja` 里新增了一个 `counterfactual_block` 宏，**只挂在
+> `positive.jinja` 上**：它把"怎么构造一个会诱导智能体踩坑的场景"写成硬要求（说出
+> 陷阱前提、违反与否可观测、**不要在题面里复述规则本身**——那会让题目退化成一道
+> 阅读理解）。`focus` 里没有 `negative_constraint_ids` 时整段不渲染。
+>
 > 它顺带修好了 `prompts/_shared.jinja` 的一处遗漏：`focus_block` 宏原先只给
 > `capability_ids` 与 `negative_constraint_ids` 渲染了人类可读描述，**组合对那一段
 > 只渲染裸 id**。`capability_id` 是描述文本的哈希，模型看到两串哈希无法构造出真正
@@ -65,6 +70,19 @@ version = await TestSuiteService().incremental_patch(
 补生成数量默认按 focus 内容规模动态决定（每个能力/组合各一条正向、每个负向
 约束一条反向），不固定 8-10。确有把握时可用 `positive_count` / `negative_count`
 覆盖。
+
+> ✅ **`18` 是 `negative_constraint_ids` 的首个真实调用方**，实现见
+> `nodes/weighted_coverage/nodes.py::WeightedCoveragePipeline.constraint_feedback_generation`。
+> 它暴露了上面那句默认映射的一处**语义错配**，后来的调用方请注意：
+>
+> 默认把"每个负向约束"映射到 `negative_count`（即 NEGATIVE 类别）。但本项目的
+> `NEGATIVE` 指的是"不该触发本 Skill"的**近脱靶**题，而反事实用例恰恰是**该由
+> 本 Skill 处理**的真实请求——只是场景里埋了个会让人踩坑的前提。两者是相反的
+> 类别。因此 `18` 显式传 `positive_count=约束条数` / `negative_count=0`，走正向
+> 模板。
+>
+> **默认值没有改动**（改它会影响所有既有调用方的条数计算），但凡是用
+> `negative_constraint_ids` 补题的调用方都应当显式指定这两个参数。
 
 新增用例**独立**做 60/40 划分，已有用例的 `split` 归属不变——补盲区不应该让
 已经跑过优化闭环的训练/验证集边界发生变化。
@@ -79,6 +97,7 @@ version = await TestSuiteService().incremental_patch(
 | `manual_cli` | `skill-evaluate generate --force` |
 | `coverage_gap` | 模块六/七检测到盲区 |
 | `combinatorial_gap` | **模块七组合矩阵盲区**（docs/dev/17，首个真实生产者）、模块十组合矩阵盲区 |
+| `negative_constraint_gap` | **模块八负向约束盲区**（docs/dev/18，首个也是唯一的生产者）——某条 Gotchas 禁令没有任何反事实用例去诱导 |
 | `cross_model_sampling` | 模块九验证集不足时定向生成 |
 
 ## 3. 新增用例类别（`20` MULTI_SKILL）

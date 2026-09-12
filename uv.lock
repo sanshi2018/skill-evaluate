@@ -1695,6 +1695,9 @@ dev = [
 langfuse = [
     { name = "langfuse" },
 ]
+tokenizer = [
+    { name = "tiktoken" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -1721,10 +1724,11 @@ requires-dist = [
     { name = "structlog", specifier = ">=24.4" },
     { name = "tenacity", specifier = ">=9.0" },
     { name = "testcontainers", extras = ["postgres"], marker = "extra == 'dev'", specifier = ">=4.8" },
+    { name = "tiktoken", marker = "extra == 'tokenizer'", specifier = ">=0.8" },
     { name = "typer", specifier = ">=0.13" },
     { name = "uvicorn", specifier = ">=0.32" },
 ]
-provides-extras = ["langfuse", "dev"]
+provides-extras = ["langfuse", "tokenizer", "dev"]
 
 [[package]]
 name = "sniffio"

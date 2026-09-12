@@ -1,6 +1,7 @@
 # 接入文档：用例集瘦身、组合矩阵与建议队列（docs/dev/17 留给后续模块的接口）
 
-> 由谁接入：`18`（模块八——权重分级落地后替换组合矩阵的截断策略）、
+> 由谁接入：~~`18`（模块八——权重分级落地后替换组合矩阵的截断策略）~~ ✅ **已接入**
+> （见第 4 节与 `docs/dev/interfaces/18_weighted_coverage.md`）、
 > `22`（审查工作台——消费 `test_case_suggestions` 建议队列，并实现真正的淘汰动作）、
 > `24`（主图装配、状态 schema 合并、节点顺序、`COLD` 用例的 Nightly 调度）。
 > 当前状态：五个节点、`test_case_suggestions` 表与仓储、`DatasetSplit.COLD` 的首个
@@ -115,7 +116,22 @@ findings 里点名 `_pruning_pair_coverage_ratio`，不是判 PASS——漏并�
 
 ---
 
-## 4. `18`：把组合矩阵的截断策略换成正式实现
+## 4. `18`：把组合矩阵的截断策略换成正式实现 —— ✅ 已落地
+
+> ✅ `18` 接管了这个插槽，但实际结果与本节当初的预期有**一处重要出入**，因为
+> 顺序是 16 → 17 → 18 而权重分级是 18 的第一个节点：
+>
+> - **同一轮里本维度看到的 tier 仍然是占位值**，`_tier_ranked()` 仍然返回 False，
+>   报告里那句"未做优先级筛选的截断分析"**不会**在接入当轮消失。真实分级落库后，
+>   **下一轮**评测的本节点才会看到它并翻成 True。
+> - 当轮的真实优先级由 `18` 的 `coverage.upgrade_combinatorial_priority` 节点重排
+>   一次给出（它读 `combinatorial_pairs_covered`，不重扫用例）。
+> - 排序实现已收敛到 `nodes/weighted_coverage/priority.py::prioritized_pairs()`，
+>   本维度的 `_prioritized_pairs()` 改为委托调用；`_tier_ranked()` 同样委托给
+>   `CapabilityTree.tier_grading_applied()`。同一个问题在两处各判一次会慢慢漂移。
+> - 排序口径本身换了：从"档位序号之和"改成 **`TIER_WEIGHTS` 之和**（docs/dev/18
+>   第 6 节定的）。差异只体现在 P0×P2（0.7）与 P1×P1（0.6）谁优先上，两种答案都
+>   说得通，统一采用 18 定的那种——权重表全项目只该有一张。
 
 当前实现已经**预留好了插槽**，权重分级落地后不需要改结构，只需要确认行为：
 

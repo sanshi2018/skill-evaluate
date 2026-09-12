@@ -1,9 +1,14 @@
 """Analyzer Agent 本体（docs/dev/16 第 2 节）。
 
-**职责边界**：只做两件结构化抽取——把 SKILL.md 拆成 `CapabilityTree`、把一条
-用例映射到若干 `capability_id`。它不落库、不计算覆盖率、不决定要不要补题，那些
-是 `nodes/coverage/` 的事。这个边界让文档 17（冗余折叠/组合矩阵）与文档 18
-（权重分级/反事实约束）可以各自复用同一个 Agent，而不需要各自造一个分析器。
+**职责边界**：只做结构化抽取——把 SKILL.md 拆成 `CapabilityTree`、给能力定权重
+档位、抽出负向约束、把一条用例映射到若干 `capability_id`。它不落库、不计算覆盖
+率、不决定要不要补题，那些是 `nodes/coverage/`（模块六）与
+`nodes/weighted_coverage/`（模块八）的事。这个边界让三份覆盖率文档复用同一个
+Agent，而不需要各自造一个分析器。
+
+四个方法分属两份文档：`extract_capability_tree()` / `map_case_to_capabilities()`
+由 docs/dev/16 引入，`classify_tiers()` / `extract_negative_constraints()` 由
+docs/dev/18 补齐——后两者正是前者留下的两处占位（见 `PLACEHOLDER_TIER`）。
 
 ## 为什么映射不走 Judge Agent
 
@@ -27,11 +32,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from skill_evaluate.agents.analyzer.identity import build_capability_id
+from skill_evaluate.agents.analyzer.identity import build_capability_id, build_constraint_id
 from skill_evaluate.agents.analyzer.schema import (
     CapabilityExtraction,
     CaseCapabilityMapping,
     ExtractedCapability,
+    ExtractedNegativeConstraint,
+    NegativeConstraintExtraction,
+    TierClassification,
 )
 from skill_evaluate.agents.base import BaseLLMAgent
 from skill_evaluate.agents.llm import AgentLLMClient
@@ -39,7 +47,7 @@ from skill_evaluate.agents.templating import build_prompt_env
 from skill_evaluate.config import get_settings
 from skill_evaluate.logging import get_logger
 from skill_evaluate.observability.langfuse_adapter import LangfuseAdapter, LangfuseTraceHandle
-from skill_evaluate.state.capability import CapabilityNode, CapabilityTree
+from skill_evaluate.state.capability import CapabilityNode, CapabilityTree, NegativeConstraint
 from skill_evaluate.state.enums import CapabilityTier
 from skill_evaluate.state.skill import SkillDefinition
 from skill_evaluate.state.test_case import TestCase
@@ -52,12 +60,13 @@ _SYSTEM_PROMPT = (
     "在原文里找不到出处的。你只输出 JSON，不输出任何解释性文字。"
 )
 
-# 本文档阶段 `tier` 的统一占位值（docs/dev/16 第 2 节 / 第 9 节）。
+# 能力抽取阶段 `tier` 的统一占位值（docs/dev/16 第 2 节 / 第 9 节）。
 #
 # 它**不代表**这些能力真的都是"条件性能力"——只是为了让 `CapabilityTree` 在结构
 # 上合法可用（`CapabilityNode.tier` 是必填字段，`TIER_WEIGHTS` 要求它是三档之一）。
-# 真实分级是文档 18 的职责：它会重跑一次分级子任务原地更新本字段，`capability_id`
-# 不变，因此历史绑定不受影响。
+# 真实分级由本文件的 `classify_tiers()`（docs/dev/18 第 3 节）原地更新本字段，
+# `capability_id` 不变，因此历史绑定不受影响。它跑在模块八的子图里，也就是模块
+# 六/七全部跑完之后——在那之前读到的 tier 都还是这个占位值。
 #
 # 为什么选 P1 而不是 P0：占位值会被 `weighted_coverage()` 当真。全填 P0 会让
 # 文档 18 接入前的任何一次加权计算都得出"全部是核心能力"这一最激进的口径；
@@ -97,11 +106,17 @@ class AnalyzerAgent(BaseLLMAgent):
     async def extract_capability_tree(self, skill: SkillDefinition) -> CapabilityTree:
         """通读 SKILL.md 的 description 与正文，拆解为原子能力清单。
 
-        本文档阶段的两个占位（docs/dev/16 第 9 节的接口清单）：
+        本方法**只负责抽取**，两项模块八的内容不在这里产出（它们各有独立的调用，
+        跑在模块八的子图里，见 `classify_tiers()` / `extract_negative_constraints()`）：
 
-        - `tier` 统一填 `PLACEHOLDER_TIER`，**不做真实分级**——分级是文档 18 的
-          职责，此处只保证 `CapabilityTree` 结构上合法可用；
-        - `negative_constraints` 留空列表——反事实约束抽取同样属于文档 18。
+        - `tier` 统一填 `PLACEHOLDER_TIER`，此处只保证 `CapabilityTree` 结构上
+          合法可用；
+        - `negative_constraints` 留空列表。
+
+        ⚠️ 这也意味着**每一次重新抽取都会把真实分级重置回占位值**（落库是按
+        `(skill_id, skill_version_ref)` 的整树 upsert）。这不是 bug：分级依据的是
+        SKILL.md 正文，正文重新抽过一遍，分级就该跟着重来一遍。模块八的子图排在
+        模块六之后，每次运行都会重新分级，因此稳态下不会出现"树上永远是占位值"。
 
         `covered` / `covering_case_ids` 一律是初值：覆盖情况由
         `nodes/coverage/nodes.py::map_case_coverage` 在映射阶段填，抽取阶段
@@ -181,7 +196,180 @@ class AnalyzerAgent(BaseLLMAgent):
         return nodes
 
     # ------------------------------------------------------------------ #
-    # 2. 用例-能力映射
+    # 2. 权重分级（docs/dev/18 第 3 节）
+    # ------------------------------------------------------------------ #
+
+    async def classify_tiers(self, tree: CapabilityTree, skill: SkillDefinition) -> CapabilityTree:
+        """给树上每项能力定 P0/P1/P2 档位，**原地更新** `tier` 后返回同一棵树。
+
+        三条落地口径：
+
+        1. **`capability_id` 不变、节点不增不减**。分级是"给已有节点打标签"，不是
+           重新抽一棵树。模型回填了清单外的 id（编的，或引用了上一版能力树）一律
+           丢弃并记日志——接受它等于让一次分级调用悄悄改写能力树的结构，而
+           `TestCase.target_capability_ids` 里的历史绑定会因此集体失效
+           （见 `identity.py` 模块头）。
+        2. **模型没给出档位的节点保留原值**（通常是 `PLACEHOLDER_TIER`）。不默认
+           填 P0：漏判一项的代价应当是"这项的权重仍是中间档"，而不是"这项被当成
+           了最核心的能力"，后者会让加权覆盖率朝着最激进的口径偏。
+        3. **空树直接返回，不发请求**：没有候选 id 时这次调用产不出任何信息。
+
+        Prompt 里用 few-shot 判定范本固化标准（docs/dev/08 第 4 节权衡分析建议的
+        "标准能力与权重拆解范本"），而不是只给三句定义——分级是本项目里少数几个
+        "同一份输入、不同措辞会给出不同答案"的任务，范本是压住这种漂移最有效的
+        手段。
+        """
+        if not tree.nodes:
+            return tree
+
+        prompt = self._env.get_template("classify_tiers.jinja").render(
+            skill=skill,
+            nodes=tree.nodes,
+            # 与 `map_case.jinja` 同一条经验：输出示例里用真实存在的 id，比写
+            # "cap-1" 更能压住"自己编一个 id"的倾向。
+            example_capability_id=tree.nodes[0].capability_id,
+        )
+        classification = await self._call_llm(prompt, TierClassification, system=_SYSTEM_PROMPT)
+
+        by_id = {node.capability_id: node for node in tree.nodes}
+        assigned: set[str] = set()
+        for item in classification.assignments:
+            node = by_id.get(item.capability_id)
+            if node is None:
+                logger.warning(
+                    "analyzer_tier_unknown_capability_id",
+                    skill_id=tree.skill_id,
+                    capability_id=item.capability_id,
+                    tier=item.tier,
+                )
+                continue
+            if item.capability_id in assigned:
+                # 同一项被打了两次标签。保留先出现的那一次并记日志——静默按后者
+                # 覆盖，会让"这项到底几档"取决于模型的输出顺序。
+                logger.warning(
+                    "analyzer_tier_duplicate_assignment",
+                    skill_id=tree.skill_id,
+                    capability_id=item.capability_id,
+                    kept_tier=node.tier.value,
+                    dropped_tier=item.tier,
+                )
+                continue
+            assigned.add(item.capability_id)
+            node.tier = CapabilityTier(item.tier)
+            logger.info(
+                "analyzer_capability_tier_assigned",
+                skill_id=tree.skill_id,
+                capability_id=item.capability_id,
+                tier=item.tier,
+                reason=item.reason[:300],
+            )
+
+        missing = [cid for cid in by_id if cid not in assigned]
+        if missing:
+            logger.warning(
+                "analyzer_tier_missing_assignments",
+                skill_id=tree.skill_id,
+                capability_ids=missing,
+                fallback_tier=PLACEHOLDER_TIER.value,
+            )
+        logger.info(
+            "analyzer_tiers_classified",
+            skill_id=tree.skill_id,
+            skill_version_ref=tree.skill_version_ref,
+            capability_count=len(tree.nodes),
+            assigned_count=len(assigned),
+            tier_distribution={
+                tier.value: sum(1 for n in tree.nodes if n.tier is tier) for tier in CapabilityTier
+            },
+        )
+        return tree
+
+    # ------------------------------------------------------------------ #
+    # 3. 负向约束抽取（docs/dev/18 第 3 节）
+    # ------------------------------------------------------------------ #
+
+    async def extract_negative_constraints(
+        self, skill: SkillDefinition
+    ) -> list[NegativeConstraint]:
+        """从 SKILL.md 里抽出"必须避免/禁止"型规则，作为反事实追踪对象。
+
+        ## 与常识剥离度审计（docs/dev/07 模板 5.1 `omission_audit`）的关系
+
+        两者的判定逻辑有相似之处但**目标相反**，因此刻意不合并成一个模板：
+        `omission_audit` 找的是"该删的常识"（产出是删减建议），这里找的是"该保留、
+        且必须被测试覆盖的禁止性规则"（产出是覆盖率追踪对象）。合并之后，一条被
+        判为"常识、建议删除"的句子会同时成为一条"必须被用例覆盖"的约束，两个结论
+        自相矛盾。
+
+        ## 为什么定位段落靠模型而不是靠标题关键词
+
+        "Gotchas"/"注意"/"避免"/"Common Mistakes" 这类标题只是**辅助线索**写进了
+        Prompt，代码侧不做任何标题匹配。禁止性规则经常散落在操作步骤中间的一句
+        "注意不要……"里，按标题切段会把它们整批漏掉；而漏掉的表现是"这份 Skill
+        没有负向约束"——一个看起来非常健康的结论。
+
+        返回值按 `constraint_id` 去重（理由同 `_build_nodes()`：书写差异会被归一
+        掉，两条只差一个逗号的描述必然撞同一个 id，不去重会让约束覆盖率的分母
+        被虚增，而其中一条永远标不上 covered）。
+        """
+        prompt = self._env.get_template("extract_negative_constraints.jinja").render(skill=skill)
+        extraction = await self._call_llm(
+            prompt, NegativeConstraintExtraction, system=_SYSTEM_PROMPT
+        )
+        constraints = self._build_constraints(skill.skill_id, extraction.constraints)
+
+        logger.info(
+            "analyzer_negative_constraints_extracted",
+            skill_id=skill.skill_id,
+            skill_version_ref=skill.version_ref,
+            constraint_count=len(constraints),
+            raw_count=len(extraction.constraints),
+        )
+        return constraints
+
+    @staticmethod
+    def _build_constraints(
+        skill_id: str, extracted: list[ExtractedNegativeConstraint]
+    ) -> list[NegativeConstraint]:
+        """把模型抽出的条目转成 `NegativeConstraint`，并按 `constraint_id` 去重。
+
+        `covered` / `covering_case_ids` 一律是初值：抽取阶段对"有没有用例诱导过这
+        个坑"一无所知，那是 `nodes/weighted_coverage` 映射节点的结论。
+        """
+        constraints: list[NegativeConstraint] = []
+        seen: set[str] = set()
+        for item in extracted:
+            description = item.description.strip()
+            if not description:
+                # 空描述既生不成有意义的 id，也没法作为补题指令喂给 Generator。
+                logger.warning("analyzer_constraint_skipped_empty", skill_id=skill_id)
+                continue
+            constraint_id = build_constraint_id(skill_id, description)
+            if constraint_id in seen:
+                logger.info(
+                    "analyzer_constraint_deduplicated",
+                    skill_id=skill_id,
+                    constraint_id=constraint_id,
+                    dropped_description=description,
+                )
+                continue
+            seen.add(constraint_id)
+            # evidence_quote 同样不进 `NegativeConstraint`（字段表由 docs/dev/02
+            # 定），但它是人工复核"这条规则是不是模型脑补的"的主要线索。
+            logger.info(
+                "analyzer_negative_constraint_extracted",
+                skill_id=skill_id,
+                constraint_id=constraint_id,
+                description=description,
+                evidence_quote=item.evidence_quote.strip()[:500],
+            )
+            constraints.append(
+                NegativeConstraint(constraint_id=constraint_id, description=description)
+            )
+        return constraints
+
+    # ------------------------------------------------------------------ #
+    # 4. 用例-能力映射
     # ------------------------------------------------------------------ #
 
     async def map_case_to_capabilities(self, case: TestCase, tree: CapabilityTree) -> list[str]:

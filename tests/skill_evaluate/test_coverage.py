@@ -645,13 +645,44 @@ async def test_全覆盖时判定通过() -> None:
     assert parts["judge_repo"].saved[0].status is JudgeVerdictStatus.PASS
 
 
-def test_覆盖率规则以大于等于为口径且标注未加权() -> None:
+def test_覆盖率规则以大于等于为口径() -> None:
     rule = get_rule(RULE_CAPABILITY_COVERAGE)
     # 阈值 0.9 的语义是"达到九成"，恰好 0.9 应当通过。
-    assert rule(coverage_inputs(coverage_ratio=0.9, threshold=0.9)) is JudgeVerdictStatus.PASS
-    assert rule(coverage_inputs(coverage_ratio=0.89, threshold=0.9)) is JudgeVerdictStatus.FAIL
-    # 口径标记：文档 18 换成加权版本时翻成 True，历史判定据此仍可区分。
-    assert coverage_inputs(coverage_ratio=0.5, threshold=0.9)["tier_weighted"] is False
+    inputs = {"coverage_ratio": 0.9, "threshold": 0.9, "tier_weighted": False}
+    assert rule(inputs) is JudgeVerdictStatus.PASS
+    assert rule({**inputs, "coverage_ratio": 0.89}) is JudgeVerdictStatus.FAIL
+
+
+def test_口径标记由调用方按树的实际分级状态传入() -> None:
+    """docs/dev/18 落地后 `tier_weighted` 不再写死（见 `nodes/coverage/rules.py`）。
+
+    本维度跑在权重分级**之前**，树上全是占位 tier，因此这里传 False——加权算出来
+    的数此刻与等权完全相同，但那个"相同"是巧合而不是结论，标成 True 会让读报告的
+    人以为这个百分比已经体现了能力的重要性差异。
+    """
+    assert coverage_inputs(coverage_ratio=0.5, threshold=0.9, tier_weighted=False)[
+        "tier_weighted"
+    ] is False
+    assert coverage_inputs(coverage_ratio=0.5, threshold=0.9, tier_weighted=True)[
+        "tier_weighted"
+    ] is True
+
+
+async def test_覆盖率算法与加权口径共用同一个实现() -> None:
+    """docs/dev/interfaces/16 第 4.2 节点名的坑：规则换成加权而节点里的算法没换，
+    判定与报告会给出两个不同的数。因此 `blind_spot_detection` 调的就是
+    `CapabilityTree.weighted_coverage()`，与模块八重算时是同一个方法。
+    """
+    tree = _default_tree()
+    tree.nodes[0].tier = CapabilityTier.P0_CORE
+    tree.nodes[0].covered = True
+    pipeline, parts = _pipeline(tree=tree)
+
+    result = await pipeline.blind_spot_detection(_state())
+
+    assert result[KEY_COVERAGE_RATIO] == pytest.approx(tree.weighted_coverage())
+    # 树上出现了不止一档 tier → 这次判定如实标注为加权口径。
+    assert "'tier_weighted': True" in parts["judge_repo"].saved[0].reasoning
 
 
 # --------------------------------------------------------------------------- #

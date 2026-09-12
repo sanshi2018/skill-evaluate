@@ -59,6 +59,17 @@ verdict = judge.quantitative_verdict(
 )
 ```
 
+> ✅ **`16`/`18` 已落地，两者共用一条规则** `capability_coverage_threshold`：
+> 覆盖率算法是 `CapabilityTree.weighted_coverage()`，`16` 在权重分级之前调它
+> （`inputs.tier_weighted=False`，等权口径），`18` 在分级之后再调一次
+> （`tier_weighted=True`，真实加权口径），靠 `subject_id` 前缀
+> （`coverage:` / `wcoverage:`）分开归档。
+>
+> docs/dev/18 原本设想给本文件加一个 `override_rule()` 来替换同名规则的实现体，
+> **最终没有加**：同一个规则名在不同时刻指向不同实现，会让"这次判定到底用的哪条
+> 规则"无法追溯，而那正是 `register_rule()` 遇重名直接报错的理由。口径差异改用
+> `inputs` 里的标记字段表达。
+
 几条容易踩的约定：
 
 - **`quantitative_verdict()` 是同步的，且不落库。** 纯算术没有 IO；量化判定通常

@@ -28,6 +28,9 @@ from skill_evaluate.agents.mini.templates import (  # noqa: F401  # 注册副作
 from skill_evaluate.agents.mini.templates import (  # noqa: F401  # 注册副作用
     security as _security,
 )
+from skill_evaluate.agents.mini.templates import (  # noqa: F401  # 注册副作用
+    weighted_coverage as _weighted_coverage,
+)
 from skill_evaluate.agents.mini.templates.registry import (
     REVIEW_TEMPLATE_REGISTRY,
     ReviewTemplate,
