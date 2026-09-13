@@ -70,6 +70,13 @@ verdict），所以你不需要为 ROUTINE / CRITICAL 写两套构造代码。
 `19` 若要加静态拦截器（检测"Think step-by-step like a Hermes model"这类咒语），
 挂在 `OptimizerAgent.propose_patch()` 的返回值上做一次校验即可，不需要改本层。
 
+> ✅ **`19` 已落地，但挂载点不同**：拦截器实现为 `retest_fn` 装饰器
+> `with_quirk_stripping_gate()`（`agents/optimizer/consensus_gate.py`），而不是包装
+> `propose_patch()`。原因：在 `propose_patch()` 返回值上校验失败只能抛异常，会让
+> `OptimizationLoop` 整体崩掉；作为 `retest_fn` 返回 `LoopResult(passed=False)` 则自然计入一轮
+> 失败尝试、进入下一轮，与"补丁没修好"走同一条路径。同文件还提供异构共识门控
+> `with_consensus_gate()`，用法见 `docs/dev/interfaces/19_cross_model_generalization.md` 第 4 节。
+
 ---
 
 ## 4. `15`：安全闭环与强制功能回归

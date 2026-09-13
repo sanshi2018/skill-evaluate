@@ -104,6 +104,31 @@ class ExecutorSettings(BaseSettings):
     # 并发有上限，而不是"看调度器扛不扛得住"。
     max_concurrent_sandboxes: int = 10
 
+    # ---- docs/dev/19（模块九：第二个异构执行后端 `llama_control`）追加 ----
+    #
+    # 与 `hermes_*` 平行的一组字段，放在 ExecutorSettings 而不是 CrossModelSettings：
+    # 它描述的是"怎么连上一个执行后端"，与"模块九怎么做对照实验"是两件事——
+    # 共识门控（docs/dev/19 第 7 节）在模块一/五的闭环里也会用到同一个后端。
+    #
+    # 未配置 endpoint 时后端退化为 `UnconfiguredLlamaControlClient`：提交任务显式报错、
+    # `health_check()` 恒为 False，而**不是**伪造成功（与 Hermes 的处理原则一致）。
+    llama_control_endpoint: str | None = None
+    llama_control_api_key: SecretStr = SecretStr("")
+    # 备用代理跑的开源模型。只是透传给 Llama 运行时的一个标识，本系统不解析它；
+    # 默认值取 Hugging Face 上的命名，自托管部署按实际改。
+    llama_control_model: str = "meta-llama/Llama-3.3-70B-Instruct"
+    # 等待机制（docs/dev/19 第 3 节要求"类比 docs/dev/03 第 4.4 节自行设计"）：
+    # - `poll`（默认）：提交后在进程内轮询任务状态，直到完成或墙钟超时。不依赖图
+    #   上下文与回调 API，适合 HF Inference Endpoint 这类只提供查询接口的托管方案；
+    # - `callback`：与 Hermes 完全同构——落 `pending_hooks` → `suspend_and_wait()` 挂起
+    #   → 运行时回调 `POST /hooks/llama_control/...` 唤醒。适合长任务（不占着一个
+    #   协程干等），但要求运行时能访问本系统的 Hook API。
+    llama_control_wait_mode: str = "poll"
+    llama_control_poll_interval_s: float = 5.0
+    # callback 模式下回调签名用的 HMAC 密钥（`X-Llama-Signature`）。与 Hermes 分开：
+    # 两个外部运行时的信任边界不同，一个泄露不该让另一个的回调也能被伪造。
+    llama_control_hook_secret: SecretStr = SecretStr("")
+
 
 class ContextScopingSettings(BaseSettings):
     """模块二（docs/dev/12）：上下文利用率与范围界定静态评测的阈值。
@@ -334,6 +359,52 @@ class CoverageSettings(BaseSettings):
     artifacts_dir: str = "artifacts"
 
 
+class CrossModelSettings(BaseSettings):
+    """模块九（docs/dev/19）：跨模型泛化与代理绑架防范的实验参数。
+
+    本组配置同样全部是"成本 vs 证据强度"的旋钮——架构文档对模块九的权衡分析第一句
+    就是"成本与迭代阻力激增"。没有暴露成配置的是 `blocking`（维度恒为非阻断，
+    理由见 `nodes/cross_model/nodes.py::BLOCKING`）：那是策略决定，改它应该留下代码
+    评审记录，而不是某次 CI 里悄悄翻一个环境变量。
+    """
+
+    model_config = SettingsConfigDict(env_prefix="SKILLEVAL_CROSS_MODEL_")
+
+    # 从验证集抽样的比例（架构文档"随机抽取 20% 的用例"）。抽样用 skill_id 派生的
+    # 确定性种子，同一 Skill 每次抽到的用例一致，便于复现与前后对比。
+    sample_ratio: float = 0.2
+
+    # 备用代理在执行后端注册表里的名字（docs/dev/03 第 4.1 节）。换成别的异构后端
+    # （例如另一家开源模型的运行时）只需注册一个新后端并改这里。
+    secondary_backend: str = "llama_control"
+
+    # 每条对照分支对同一用例跑几次。默认 1 次（docs/dev/19 原文口径，成本最低）；
+    # 调大后判定改为"触发符合预期的比例是否跨过 0.5"，能压掉单次执行的随机噪声。
+    # 上限 10 由 `state/trace.py` 的号段宽度 `RUN_INDEX_XMODEL_ARM_WIDTH` 决定。
+    runs_per_arm: int = Field(default=1, ge=1, le=10)
+
+    # 单次执行墙钟超时。与模块一同为 90s：跑的是同一类"真实 Agent 任务"。
+    execution_timeout_s: int = 90
+
+    # 参数扰动实验的两组采样参数（架构文档：temperature=0 完美通过、0.2 全面崩溃
+    # 即说明过拟合了贪心解码路径）。⚠️ 扰动只在执行模型支持采样参数时才真实发生，
+    # 见 docs/dev/interfaces/06_llm_client_and_sampling.md 第 2 节。
+    perturbation_baseline_overrides: dict[str, float] = Field(
+        default_factory=lambda: {"temperature": 0.0}
+    )
+    perturbation_overrides: dict[str, float] = Field(
+        default_factory=lambda: {"temperature": 0.2, "top_p": 0.9}
+    )
+
+    # 消融测试中，每一处命中词典的"咒语"被真正删掉的概率。不取 1.0：架构文档写的是
+    # "随机屏蔽或删减**部分**"——全删会让消融版本与原版差异过大，失败时分不清是
+    # 哪一类措辞在兜底；随机子集配合确定性种子，既可复现又保留实验的"抽样"性质。
+    ablation_drop_probability: float = Field(default=0.8, ge=0.0, le=1.0)
+
+    # 共识门控的"权重容忍度"（架构文档：备用代理降幅控制在 5% 以内即视为未被绑架）。
+    consensus_tolerance: float = Field(default=0.05, ge=0.0, le=1.0)
+
+
 class JudgeSettings(BaseSettings):
     """Judge Agent 的可信度机制参数（docs/dev/08）。
 
@@ -433,6 +504,7 @@ class Settings(BaseSettings):
     script_usability: ScriptUsabilitySettings = Field(default_factory=ScriptUsabilitySettings)
     security: SecuritySettings = Field(default_factory=SecuritySettings)
     coverage: CoverageSettings = Field(default_factory=CoverageSettings)
+    cross_model: CrossModelSettings = Field(default_factory=CrossModelSettings)
     judge: JudgeSettings = Field(default_factory=JudgeSettings)
     optimizer: OptimizerSettings = Field(default_factory=OptimizerSettings)
     validator: ValidatorSettings = Field(default_factory=ValidatorSettings)

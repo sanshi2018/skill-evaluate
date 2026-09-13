@@ -387,4 +387,4 @@ SKILLEVAL_INSTRUCTION_CONTROL_TRACE_DIGEST_MAX_OUTPUT_CHARS=400
 | A/B 骨架与 ROI 判定的公开入口 | ✅ 已加（`run_ab_pairs()` / `judge_roi()`） | `15` 已用于强制功能回归 | 见第 5.3 节；`19`/`20` 可直接复用 |
 | 效率诊断/控制标定升级为阻断项 | 当前非阻断 | 运维调优，非新文档职责 | 改 `finalize_dimension_report()` 里 `blocking` 的计算式一处即可；同时应把对应 `Criticality` 升到 CRITICAL（`_to_outcome()` 已备好共识路径） |
 | ROI 判定的黄金基准用例 | 依赖 docs/dev/08 的黄金库 | `21`（Generator 可信度与黄金基准） | 往 `golden_cases` 表里加 `template_key='roi_comparison'` 的条目即可，本维度不需要改动 |
-| 跨模型跑 A/B | 未涉及 | `19` | `19` 自己构造带 `sampling_overrides` 的 `ExecutionRequest`，**不要**改本维度的 `_run_ab()`——请求的构造是各维度语义的一部分（与 docs/dev/interfaces/11 第 4.2 节同一条约定） |
+| 跨模型跑 A/B | 未涉及（`19` 已落地，未跨模型跑 A/B） | `19` | `19` 自己构造带 `sampling_overrides` 的 `ExecutionRequest`，**不要**改本维度的 `_run_ab()`——请求的构造是各维度语义的一部分（与 docs/dev/interfaces/11 第 4.2 节同一条约定） |

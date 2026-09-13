@@ -207,6 +207,12 @@ await GoldenCaseRepository().save(
 
 ## 5. 共识扰动策略：`19` 想做跨模型复核时
 
+> **`19` 落地后的实际情况**：模块九**没有**复用本节的跨模型共识——它的"异构"对象是执行 Agent
+> 而不是裁判。模块九新增四条量化规则（`cross_model_heterogeneous_consistency` /
+> `cross_model_perturbation_robustness` / `cross_model_ablation_robustness` /
+> `cross_model_consensus_gate`），语言坏味道审查走 `judgmental_verdict()`（ROUTINE）。
+> 本节的 `consensus_strategy="model"` 仍然可用，只是目前没有维度依赖它。
+
 `docs/dev/interfaces/06_llm_client_and_sampling.md` 第 2 节留给 `08` 的定稿已经
 落地：**默认走 Prompt 视角扰动**（`consensus_strategy="perspective"`），因为默认
 `judge_model`（`claude-sonnet-5`）已移除采样参数，温度扰动在它上面物理不成立。

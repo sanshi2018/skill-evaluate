@@ -98,7 +98,7 @@ version = await TestSuiteService().incremental_patch(
 | `coverage_gap` | 模块六/七检测到盲区 |
 | `combinatorial_gap` | **模块七组合矩阵盲区**（docs/dev/17，首个真实生产者）、模块十组合矩阵盲区 |
 | `negative_constraint_gap` | **模块八负向约束盲区**（docs/dev/18，首个也是唯一的生产者）——某条 Gotchas 禁令没有任何反事实用例去诱导 |
-| `cross_model_sampling` | 模块九验证集不足时定向生成 |
+| `cross_model_sampling` | 模块九验证集不足时定向生成（**docs/dev/19 实现时决定不启用**：非阻断维度不改变用例集，空抽样如实报告；取值保留） |
 
 ## 3. 新增用例类别（`20` MULTI_SKILL）
 

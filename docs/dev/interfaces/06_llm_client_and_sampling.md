@@ -136,6 +136,15 @@ Claude 4.6 及以后的模型（`claude-opus-5`、`claude-sonnet-5`、`claude-op
 
 ## 3. 跨模型泛化（`19`）：换模型而不是换 provider
 
+> **`19` 落地后的补充**：模块九的"异构执行矩阵"比的是**执行 Agent**（要真的读文件、调工具、
+> 产出 Trace 树），不是 Judge/Mini 这类 LLM 调用，因此它没有走本节的"换 OpenRouter 模型 ID"，
+> 而是新增了第二个执行后端 `llama_control`（`executors/llama_backend.py`，见
+> `docs/dev/interfaces/19_cross_model_generalization.md` 第 3 节）。本节对 **LLM 调用层**的约定
+> （只有 OpenRouter 一条出口、不新增 provider 分支）仍然成立。
+>
+> 模块九的参数扰动实验依赖执行模型真的接受 `temperature`/`top_p`——第 2 节的"新模型已移除
+> 采样参数"同样适用于执行后端，报告里会写明这条前提。
+
 OpenRouter 一个 Key 覆盖 400+ 模型，所以 `19` 的"跨模型泛化"不再需要新增
 provider/client，只需要在调用点传不同的 OpenRouter 模型 ID——`BaseLLMAgent`
 子类本来就允许按实例指定 `model`（见第 2 节末尾的三副本方案）。

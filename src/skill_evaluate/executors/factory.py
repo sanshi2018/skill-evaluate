@@ -10,6 +10,9 @@ from skill_evaluate.config import get_settings
 
 # 触发 `hermes` 的注册（模块导入即执行装饰器）。
 from skill_evaluate.executors import hermes_backend as _hermes_backend  # noqa: F401
+
+# 触发 `llama_control` 的注册（docs/dev/19：模块九的备用异构代理）。
+from skill_evaluate.executors import llama_backend as _llama_backend  # noqa: F401
 from skill_evaluate.executors.base import ExecutorBackend
 from skill_evaluate.executors.mini_backend import MiniAgentBackend
 from skill_evaluate.executors.registry import get_backend

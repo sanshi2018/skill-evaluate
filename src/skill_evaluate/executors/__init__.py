@@ -7,6 +7,12 @@ from skill_evaluate.executors.hermes_backend import (
     HermesHookPayload,
     map_hermes_payload_to_trace,
 )
+from skill_evaluate.executors.llama_backend import (
+    HttpLlamaControlClient,
+    LlamaControlBackend,
+    LlamaControlClient,
+    UnconfiguredLlamaControlClient,
+)
 from skill_evaluate.executors.mini_backend import MiniAgentBackend
 from skill_evaluate.executors.registry import get_backend, register_backend
 from skill_evaluate.executors.routing import NODE_BACKEND_ROUTING, resolve_backend_type
@@ -26,9 +32,13 @@ __all__ = [
     "ExecutorBackend",
     "HermesBackend",
     "HermesHookPayload",
+    "HttpLlamaControlClient",
+    "LlamaControlBackend",
+    "LlamaControlClient",
     "MiniAgentBackend",
     "ProcessResult",
     "ScriptSandboxRunner",
+    "UnconfiguredLlamaControlClient",
     "build_backend",
     "get_backend",
     "get_backend_for_node",

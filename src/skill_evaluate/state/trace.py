@@ -40,6 +40,26 @@ RUN_INDEX_SEC_ARTIFACT_SAST = 124
 RUN_INDEX_SEC_REGRESSION_TRIGGER = 130  # 130 .. 130+redundant_runs-1（默认 130~132）
 RUN_INDEX_SEC_REGRESSION_AB_LOADED = 140  # A/B 加载分支，按 140 + 2*i 编号
 RUN_INDEX_SEC_REGRESSION_AB_BASELINE = 141  # A/B 基线分支
+# 模块九（docs/dev/19）：跨模型泛化的三条对照实验 + 共识门控。
+#
+# 与前面各维度"一个号一条分支"不同，这里**每条分支占 10 个号**（号段起点 + 0..9）：
+# 单次执行的对照结论噪声很大，`CrossModelSettings.runs_per_arm` 允许按需把每条分支
+# 加到多次冗余执行（上限 10，正是由这张表的号段宽度决定的）。
+#
+# 两两对照的两条分支必须各占号段：`(case_id, run_index)` 唯一，同号的话"原版"与
+# "变体"的 Trace 会互相覆盖，对照实验就退化成拿同一条 Trace 和自己比。
+RUN_INDEX_XMODEL_ARM_WIDTH = 10
+RUN_INDEX_XMODEL_PRIMARY = 150  # 异构矩阵：主代理（路由表上的 PLUGGABLE 后端，默认 Hermes）
+RUN_INDEX_XMODEL_SECONDARY = 160  # 异构矩阵：备用代理（默认 llama_control）
+RUN_INDEX_XMODEL_PERTURB_BASELINE = 170  # 参数扰动：贪心基线（temperature=0）
+RUN_INDEX_XMODEL_PERTURB_VARIANT = 180  # 参数扰动：扰动分支（temperature=0.2, top_p=0.9）
+RUN_INDEX_XMODEL_ABLATION_ORIGINAL = 190  # 消融测试：原版 SKILL.md
+RUN_INDEX_XMODEL_ABLATION_ABLATED = 200  # 消融测试：剥离"咒语"后的 SKILL.md
+# 共识门控（`agents/optimizer/consensus_gate.py`）：补丁前基线 / 补丁后候选，都跑在
+# 备用代理上。候选号段在闭环的每一轮复用——与模块五闭环重测同一语义，判定只看
+# "当前这一版补丁"的表现。
+RUN_INDEX_XMODEL_GATE_BASELINE = 210
+RUN_INDEX_XMODEL_GATE_CANDIDATE = 220
 # 模块四（docs/dev/14）**不占号段**：它裸调脚本子进程（`executors/script_sandbox.py`
 # 的 `ScriptSandboxRunner`），一条 `ExecutionTrace` 都不落，与本表无关。登记在这里
 # 是为了让下一个来申领号段的人不必再翻一遍模块四的代码确认这件事。

@@ -201,7 +201,7 @@ async def _check_generation_collapse(new_cases: list[TestCase]) -> bool:
 | `_check_generation_collapse()` | 占位恒真实现 | `21` | 替换函数体为向量距离计算，依赖文档 23 的 pgvector 检索层 |
 | `GenerationRequest.seed_anchor_ids` | 仅作为 few-shot 文本注入，无版本控制的种子库 | `21` | 接入 GitHub 托管的种子锚点配置文件，实现版本化拉取 |
 | `CapabilityFocus` 的实际构造方 | 模型已定义，无生产者 | `16/17`（模块六/七）、`20`（模块十组合矩阵） | 各文档在检测到盲区后，构造 `CapabilityFocus` 并调用 `incremental_patch()` |
-| `triggered_by="cross_model_sampling"` 的调用方 | 字符串占位，未实际使用 | `19` | 模块九抽样验证集用例时若发现验证集不足，可能需要定向生成，此时传入该 triggered_by 值供审计 |
+| `triggered_by="cross_model_sampling"` 的调用方 | 字符串占位，未实际使用；**`19` 实现时决定不启用** | — | 模块九是非阻断维度，不应拥有改变用例集的权力；验证集为空时如实报告 NEEDS_HUMAN_REVIEW（见 `docs/dev/19` 第 3.2 节）。该取值保留供将来需要时使用 |
 | Langfuse 打点挂载 | 未挂载 | 本文档遗留给自身内部的 `_call_llm()` 封装 | 见第 10 节说明 |
 
 ## 10. Agent 基类与 Langfuse 钩子的落位说明

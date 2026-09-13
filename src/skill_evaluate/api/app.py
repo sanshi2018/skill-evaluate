@@ -6,6 +6,7 @@ from fastapi import FastAPI
 
 from skill_evaluate.api.hooks_approval import router as hooks_approval_router
 from skill_evaluate.api.hooks_hermes import router as hooks_hermes_router
+from skill_evaluate.api.hooks_llama import router as hooks_llama_router
 from skill_evaluate.logging import configure_logging
 
 
@@ -13,6 +14,8 @@ def create_app() -> FastAPI:
     configure_logging()
     app = FastAPI(title="skill-evaluate hooks API")
     app.include_router(hooks_hermes_router)
+    # docs/dev/19：备用代理 llama_control 的 callback 模式唤醒入口
+    app.include_router(hooks_llama_router)
     app.include_router(hooks_approval_router)
 
     @app.get("/healthz")

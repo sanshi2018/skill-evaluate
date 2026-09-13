@@ -291,7 +291,9 @@ class WeightedCoveragePipeline:
             constraint.covered = False
             constraint.covering_case_ids = []
 
+        # case有相应的负向约束
         declared: dict[str, list[str]] = {c.constraint_id: [] for c in constraints}
+        # case待分配负向约束
         pending: list[tuple[NegativeConstraint, TestCase]] = []
         for case in cases:
             bound = set(case.negative_constraint_ids)

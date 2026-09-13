@@ -427,6 +427,6 @@ DoS 探测**不用** `probe_timeout_s`，它显式取
 | 反坍塌校验对对抗用例的适用性 | 走父类同一条 `_check_generation_collapse()` | `21` | 同上，不需要为对抗用例单开一条 |
 | 共识未达成的挂起 | 抛 `PipelineSuspended` | `22` | 与 docs/dev/09 的闭环挂起同一种接法 |
 | 中危是否升级为阻断项 | 当前不阻断（见第 7.2 节） | 运维调优，非新文档职责 | 把 `REPORT_BLOCKING_SEVERITIES` 加上 MEDIUM 一处即可 |
-| 跨模型跑安全探测 | 未涉及 | `19` | `19` 自己构造带 `sampling_overrides` 的 `ExecutionRequest`，**不要**改本维度的 `_run_probe()`（与 docs/dev/interfaces/11 第 4.2 节同一条约定） |
+| 跨模型跑安全探测 | 未涉及（`19` 已落地，**未**跨模型跑安全探测；AppSec 闭环可选叠加 `with_consensus_gate` / `with_quirk_stripping_gate`，见 `interfaces/19` 第 4 节） | `19` | `19` 自己构造带 `sampling_overrides` 的 `ExecutionRequest`，**不要**改本维度的 `_run_probe()`（与 docs/dev/interfaces/11 第 4.2 节同一条约定） |
 | 多技能并发下的攻击面 | 未涉及 | `20` | 本维度的 `ExecutionRequest` 刻意不带 `background_skills`：安全性测的是单技能默认配置下的防护 |
 | 新增攻击面 | 注册表已就位 | 任何后续文档 | 见第 8.2 节 |

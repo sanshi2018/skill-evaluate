@@ -186,7 +186,7 @@ NODE_BACKEND_ROUTING: dict[str, ExecutorBackendType] = {
 | Hook 接收 HTTP 端点的具体宿主/路由实现 | 协议已定义（4.4），端点未落地 | `05` | 在可观测性/API 层实现 `POST /hooks/hermes/{run_id}/{case_id}/{run_index}`，按 4.3 表格解析并落库为 `ExecutionTrace`，同时唤醒对应 LangGraph 挂起节点 |
 | LangGraph 节点等待外部 Hook 唤醒的具体机制 | 仅提及"结合 Checkpointer 讨论" | `04` | 定义基于 `interrupt`/外部事件表的等待与恢复模式 |
 | `NODE_BACKEND_ROUTING` 中模块六/七/八条目 | 暂定整体为 MINI | `16~18` | 如实现中发现某子检查需要真实执行（如模块七的组合能力探测可能需要真实调用），可在对应文档内为具体子节点覆盖后端，不修改本表的维度级默认值 |
-| `llama_control` 等第二个异构 Backend | 仅有注册机制，无实现 | `19` | 新建 `executors/llama_backend.py`，实现 `ExecutorBackend`，`@register_backend("llama_control")` 注册 |
+| `llama_control` 等第二个异构 Backend | ✅ 已由 `19` 实现：`executors/llama_backend.py`（poll / callback 两种等待机制、`HttpLlamaControlClient`、回调端点 `api/hooks_llama.py`），结果体与 Hermes Hook Payload 同构 | `19` | 见 `docs/dev/interfaces/19_cross_model_generalization.md` 第 3 节；真实 Llama 运行时由运维按 REST 契约部署 |
 | `health_check()` 的消费方 | 接口已声明，无调用方 | `21` | 金丝雀探针节点在主测试集运行前调用，失败即挂起废弃当次评测 |
 
 ---

@@ -65,6 +65,20 @@ class HermesSandboxClient(Protocol):
 - `poll_sandbox()` 的拉取兜底路径同样应当把 `assertion_executions` 一起带回来，
   否则超时兜底场景下断言证据会静默丢失。
 
+## 追加契约：采样参数与消融正文（docs/dev/19）
+
+模块九对 `create_sandbox()` 的实现方追加两条要求：
+
+- **`request.sampling_overrides` 必须原样下发给执行模型**（`temperature` / `top_p`）。参数扰动
+  实验靠它；不下发的话"贪心基线"与"扰动分支"其实是同一种解码，实验永远得出"没有脆弱性"。
+  模型不接受采样参数时，请在 Hermes 侧日志里记明。
+- **以 `request.skill.body_markdown` 为准写出 SKILL.md**，不要从 `root_path` 重新读仓库文件。
+  随机消融实验下发的是剥离了"咒语"的正文（`version_ref` 带 `+ablation` 后缀），从磁盘读会让
+  消融版本与原版完全相同。`scripts/`、`references/` 仍按 `root_path` 挂载。
+
+备用代理 `llama_control` 的运行时遵守同样两条（`docs/dev/interfaces/19_cross_model_generalization.md`
+第 3.2 节）。
+
 ## 不要做的事
 
 - 不要在 `UnconfiguredHermesSandboxClient` 里伪造一个"成功"响应——那会让

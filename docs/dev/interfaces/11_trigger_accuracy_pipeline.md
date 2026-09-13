@@ -168,6 +168,9 @@ pipeline = add_trigger_accuracy_nodes(builder, deps)   # 返回值就是 pipelin
 traces_by_case = await pipeline.run_cases(run_id, skill, cases)
 ```
 
+> ✅ `19` 已照此办理：它的对照实验骨架是 `executors/comparison.py::run_arm()`，自己构造带
+> `sampling_overrides` 的请求，未改动本维度的 `run_cases()`。
+
 需要在请求里加 `sampling_overrides` / `background_skills` 时，请**不要**改本维度的
 `run_cases`，而是在自己的维度里按同样的形状写一份——`ExecutionRequest` 的构造是
 各维度语义的一部分（本维度刻意不带这两个字段：触发准确度测的是默认配置下的行为）。

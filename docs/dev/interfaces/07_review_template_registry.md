@@ -14,7 +14,7 @@
 | `progressive_disclosure_static` | 模块二 / `12` | `skill_md`, `reference_files` | `ProgressiveDisclosureStaticOutput` |
 | `help_doc_quality` | 模块四 / `14` | `script_path`, `help_output` | `HelpDocQualityOutput` |
 | `constructive_error` | 模块四 / `14` | `invocation`, `error_output` | `ConstructiveErrorOutput` |
-| `linguistic_smell` | 模块九 / `19` | `skill_md` | `LinguisticSmellOutput` |
+| `linguistic_smell` | 模块九 / `19` | `skill_md`（可选 `lexicon_hits`，`19` 追加） | `LinguisticSmellOutput` |
 | `control_calibration` | 模块三 / `13` | `skill_md` | `ControlCalibrationOutput` |
 
 ### 后续文档新增的模板（各自一个文件，`builtin.py` 不动）
@@ -73,6 +73,11 @@ verdict = await MiniReviewAgent().review(
    把每一项都判成问题）。
 
 ### `13`/`14`/`19` 还需要做什么
+
+> ✅ `19` 已接入 `linguistic_smell`：ROUTINE、非阻断；`.jinja` 追加了**可选**变量
+> `lexicon_hits`（`{% if lexicon_hits is defined %}`，AI 话术词典的命中清单，供模型对照原文
+> 复核），`required_variables` 与 `LinguisticSmellOutput` 字段均未改动——黄金基准用例只带
+> `skill_md` 也能照常渲染。见 `docs/dev/interfaces/19_cross_model_generalization.md` 第 5.3 节。
 
 Prompt 措辞与判定细则已在 `.jinja` 里写完（含判定信号、反面示例、"什么不算问题"
 的误伤边界）。各文档接入时**只需**：

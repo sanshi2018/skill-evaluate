@@ -22,6 +22,23 @@
 停止"）是好指令，不是坏味道。坏味道的特征是"用情绪代替信息"。
 
 {{ prefix.common_rules() }}
+{#
+  `lexicon_hits` 是可选变量（docs/dev/19 第 8 节）：模块九把
+  `agents/analyzer/ablation_lexicon.py` 的词典命中清单作为提示传进来，保证静态审查与
+  动态消融测试用的是同一份"AI 话术黑名单"。黄金基准用例的 content 只有 skill_md，
+  因此用 `is defined` 判断而不是列进 required_variables。
+#}
+{% if lexicon_hits is defined %}
+
+## 词典初筛结果（仅供参考，以原文为准）
+
+下面是一份静态词典在正文中（代码块之外）命中的措辞。词典刻意偏向误报：请逐条
+对照原文复核，**只把确实属于"用情绪/身份/音量代替信息"的片段**填进
+`model_specific_incantations`；讲清了原因的强硬约束、引用或举例说明的反面写法，
+不算坏味道。词典没命中的咒语式话术你同样要找出来。
+
+{{ lexicon_hits }}
+{% endif %}
 
 ## 被审查的文本
 
