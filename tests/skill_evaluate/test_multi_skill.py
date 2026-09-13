@@ -18,7 +18,12 @@ from skill_evaluate.agents.judge.golden_injector import golden_subject_id
 from skill_evaluate.agents.judge.service import JudgeAgent
 from skill_evaluate.agents.mini.templates.registry import get_template
 from skill_evaluate.config import MultiSkillSettings, Settings
-from skill_evaluate.errors import ConfigurationError, GenerationError, PipelineSuspended
+from skill_evaluate.errors import (
+    ConfigurationError,
+    GenerationError,
+    HumanRejectedSuspension,
+    PipelineSuspended,
+)
 from skill_evaluate.executors.base import ExecutionRequest, ExecutorBackend
 from skill_evaluate.executors.hermes_backend import build_failure_trace
 from skill_evaluate.executors.skill_attribution import attribute_skill_loads, skill_mount_markers
@@ -31,6 +36,7 @@ from skill_evaluate.nodes.multi_skill import (
     RULE_CORE_REGRESSION,
     RULE_INSTRUCTION_DEADLOCK,
     RULE_TRIGGER_HIJACK,
+    TERMINAL_NODE,
     MultiSkillDeps,
     MultiSkillPipeline,
     ProbeOutcome,
@@ -45,6 +51,8 @@ from skill_evaluate.nodes.multi_skill.state import (
     KEY_CONTEXT_NOTES,
     KEY_CORE_REGRESSION_OUTCOME,
     KEY_CORE_SKILL_REFS,
+    KEY_DEEP_CONFLICT_ALERT,
+    KEY_DEEP_CONFLICT_RESOLUTION,
     KEY_HIJACK_OUTCOME,
     KEY_NAMESPACE_OUTCOME,
     KEY_NOISE_PACK_REFS,
@@ -372,6 +380,23 @@ class FakeAlerts:
         self.sent.append({"alert_type": alert_type, "run_id": run_id, "payload": payload})
 
 
+class FakeApprovals:
+    """docs/dev/22：深度冲突闸门的审批服务替身（不碰库、不需要图上下文）。"""
+
+    def __init__(self, decision: Any = None) -> None:
+        self.decision = decision
+        self.requested: list[dict[str, Any]] = []
+        self.notified: list[dict[str, Any]] = []
+
+    async def request_human_approval(self, **kwargs: Any) -> Any:
+        self.requested.append(kwargs)
+        return self.decision
+
+    async def notify_human(self, **kwargs: Any) -> Any:
+        self.notified.append(kwargs)
+        return None
+
+
 NOISE = [_skill("excel-helper"), _skill("report-writer"), _skill("json-only")]
 CORE = [_skill("sql-runner")]
 
@@ -390,6 +415,7 @@ def _deps(
     settings: MultiSkillSettings | None = None,
     trace_repo: FakeTraceRepo | None = None,
     judge_repo: FakeJudgeRepo | None = None,
+    approvals: FakeApprovals | None = None,
 ) -> MultiSkillDeps:
     skills = [target or _skill(), *(NOISE + CORE if library is None else library)]
     return MultiSkillDeps(
@@ -398,6 +424,7 @@ def _deps(
         test_suite_service=suite_service or FakeSuiteService(),  # type: ignore[arg-type]
         report_generator=reporter or FakeReporter(),  # type: ignore[arg-type]
         alert_dispatcher=alerts or FakeAlerts(),
+        approval_service=approvals or FakeApprovals(),  # type: ignore[arg-type]
         skill_repository=FakeSkillRepo(skills),  # type: ignore[arg-type]
         test_case_repository=FakeCaseRepo(cases or []),  # type: ignore[arg-type]
         test_suite_repository=FakeSuiteRepo(),  # type: ignore[arg-type]
@@ -1070,6 +1097,8 @@ class FinalizeTests:
         assert recorded["status"] is JudgeVerdictStatus.FAIL and recorded["blocking"] is True
         assert recorded["findings"][0] == "[基石熔断] x"
         assert update[KEY_ALERT_DISPATCHED] is True
+        # docs/dev/22：payload 同时写进状态，交给审批闸门分流（与告警通道是否成功无关）。
+        assert update[KEY_DEEP_CONFLICT_ALERT] == alerts.sent[0]["payload"]
         payload = alerts.sent[0]["payload"]
         assert alerts.sent[0]["alert_type"] == "deep_multi_skill_conflict"
         assert payload["blocking"] is True and payload["hard_findings"] == ["[基石熔断] x"]
@@ -1097,6 +1126,8 @@ class FinalizeTests:
             alerts=FakeAlerts(fail=True),
         )
         assert recorded["blocking"] is True and update[KEY_ALERT_DISPATCHED] is False
+        # 告警通道挂了，人工介入不能跟着消失：闸门读的是状态里的 payload。
+        assert update[KEY_DEEP_CONFLICT_ALERT]["blocking"] is True
 
     async def test_skipped_inconclusive_or_missing_need_human_review(self) -> None:
         skipped = ProbeOutcome(probe="n", status="skipped", note="基准干扰包为空")
@@ -1145,6 +1176,13 @@ class AssemblyTests:
         ) in edges
         assert all(name.startswith("multi_skill.") for name in NODE_NAMES.values())
 
+    async def test_end_to_end_subgraph_run_ends_at_the_approval_gate(self) -> None:
+        """docs/dev/22：收尾节点之后接审批闸门，闸门是新的终点。"""
+        builder = build_multi_skill_subgraph(_deps())
+        edges = set(builder.edges)
+        assert (NODE_NAMES["finalize_dimension_report"], TERMINAL_NODE) in edges
+        assert TERMINAL_NODE == NODE_NAMES["deep_conflict_approval_gate"]
+
     async def test_end_to_end_subgraph_run(self) -> None:
         """干扰包劫持全部正向用例 → FAIL；基石健康 → 不阻断；三条以上软发现 → 告警。"""
         target_cases = [_case(f"p{i}") for i in range(3)] + [
@@ -1179,6 +1217,8 @@ class AssemblyTests:
         assert recorded["blocking"] is False
         assert sum(f.startswith("[劫持]") for f in recorded["findings"]) == 3
         assert final[KEY_ALERT_DISPATCHED] is True and alerts.sent
+        # docs/dev/22：软性冲突达阈值、无基石熔断 → 闸门只发非阻塞通知，流水线不挂起。
+        assert final[KEY_DEEP_CONFLICT_RESOLUTION] == "notified"
         # 三条支路并行写 add-reducer 字段：id 不丢、不重复。
         assert len(final["executed_trace_ids"]) == len(set(final["executed_trace_ids"]))
 
@@ -1188,3 +1228,58 @@ class AssemblyTests:
         monkeypatch.setitem(routing.NODE_BACKEND_ROUTING, DIMENSION, ExecutorBackendType.MINI)
         with pytest.raises(ConfigurationError):
             MultiSkillPipeline(_deps())
+
+
+# --------------------------------------------------------------------------- #
+# docs/dev/22：深度冲突审批闸门
+# --------------------------------------------------------------------------- #
+
+
+class DeepConflictApprovalGateTests:
+    def _payload(self, *, blocking: bool) -> dict[str, Any]:
+        return {
+            "dimension": DIMENSION,
+            "skill_id": TARGET_ID,
+            "skill_version_ref": VERSION_REF,
+            "blocking": blocking,
+            "hard_findings": ["[基石熔断] x"] if blocking else [],
+            "soft_findings": ["[劫持] a", "[劫持] b", "[劫持] c"],
+            "noise_pack": [s.skill_id for s in NOISE],
+        }
+
+    async def test_no_alert_passes_through_without_touching_approvals(self) -> None:
+        approvals = FakeApprovals()
+        update = await MultiSkillPipeline(_deps(approvals=approvals)).deep_conflict_approval_gate(
+            _state(**{KEY_DEEP_CONFLICT_ALERT: None})
+        )
+        assert update[KEY_DEEP_CONFLICT_RESOLUTION] is None
+        assert approvals.requested == [] and approvals.notified == []
+
+    async def test_soft_conflict_only_notifies_and_does_not_suspend(self) -> None:
+        approvals = FakeApprovals()
+        update = await MultiSkillPipeline(_deps(approvals=approvals)).deep_conflict_approval_gate(
+            _state(**{KEY_DEEP_CONFLICT_ALERT: self._payload(blocking=False), KEY_CASE_IDS: ["m1"]})
+        )
+        assert update[KEY_DEEP_CONFLICT_RESOLUTION] == "notified"
+        assert approvals.requested == []
+        card = approvals.notified[0]
+        assert card["decision_type"].value == "resolve_deep_conflict"
+        assert card["wait_key"] == f"{RUN_ID}:multi_skill:deep_conflict"
+        assert card["context_ref"]["case_ids"] == ["m1"]  # 工作台据此取双路 Trace
+
+    async def test_core_breach_blocks_until_human_acknowledges(self) -> None:
+        approvals = FakeApprovals(decision={"decision": "acknowledge"})
+        update = await MultiSkillPipeline(_deps(approvals=approvals)).deep_conflict_approval_gate(
+            _state(**{KEY_DEEP_CONFLICT_ALERT: self._payload(blocking=True)})
+        )
+        assert update[KEY_DEEP_CONFLICT_RESOLUTION] == "acknowledge"
+        assert approvals.requested[0]["skill_id"] == TARGET_ID
+        assert approvals.notified == []
+
+    @pytest.mark.parametrize("decision", [None, {"decision": "abandon"}, "whatever"])
+    async def test_core_breach_without_explicit_acknowledge_stops(self, decision: Any) -> None:
+        approvals = FakeApprovals(decision=decision)
+        with pytest.raises(HumanRejectedSuspension):
+            await MultiSkillPipeline(_deps(approvals=approvals)).deep_conflict_approval_gate(
+                _state(**{KEY_DEEP_CONFLICT_ALERT: self._payload(blocking=True)})
+            )

@@ -191,6 +191,9 @@ docs/dev/16 第 9 节的约定已兑现：**规则名 `capability_coverage_thres
 
 ## 6. `22`：工作台可以直接用的三样东西
 
+> **docs/dev/22 落地后**：`22` 只实现了审批卡片与建议队列的 API，**没有**为未覆盖负向约束 / 可追溯性矩阵
+> 另开端点——它们不需要人做决定（系统已自动补题），工作台直接读下列数据源即可。
+
 1. **未覆盖负向约束**：`CapabilityTree.negative_constraints` 里 `covered=False`
    的条目（描述与 `covering_case_ids` 都在树上）。它们**不进** `test_case_suggestions`
    建议队列——那张表的语义是"建议人工处置某条**已有用例**"（docs/dev/17），而这里

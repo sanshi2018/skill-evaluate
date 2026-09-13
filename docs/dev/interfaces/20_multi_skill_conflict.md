@@ -83,6 +83,8 @@ multi_skill.finalize_dimension_report                    （TERMINAL_NODE）
 | `_multi_skill_temporal_outcome` | `ProbeOutcome` | role/temporal | finalize |
 | `_multi_skill_core_regression_outcome` | `ProbeOutcome` | core gate | finalize |
 | `_multi_skill_alert_dispatched` | 本次是否发出深度冲突告警 | finalize | `22` / `24` |
+| `_multi_skill_deep_conflict_alert` | 达到告警条件时的告警 payload（`22` 追加） | finalize | 审批闸门 |
+| `_multi_skill_deep_conflict_resolution` | 闸门处理结果：None / `notified` / `acknowledge`（`22` 追加） | 审批闸门 | `24` |
 
 漏键的症状：finalize 报 `NEEDS_HUMAN_REVIEW` 并点名缺的键；时序扰动因读不到拮抗结果而 `skipped`。
 三条并行支路各写自己的键，`executed_trace_ids` / `judge_verdict_ids` 是 add reducer，并行安全。
@@ -105,6 +107,14 @@ multi_skill.finalize_dimension_report                    （TERMINAL_NODE）
 ---
 
 ## 4. `22`：告警通道（本维度最主要的待接入项）
+
+> ✅ **`22` 已接入**：
+> - 真实通道：`observability/discord_notifier.py::DiscordAlertDispatcher`，`configure_notification_channels()` 注册；
+> - 分流：新增终点节点 **`multi_skill.deep_conflict_approval_gate`**（`TERMINAL_NODE` 已改指向它）。finalize 追加写
+>   `_multi_skill_deep_conflict_alert`（告警 payload，与告警是否发送成功无关），闸门按 `blocking` 分流：
+>   `True` → `RESOLVE_DEEP_CONFLICT` 阻塞审批（acknowledge 放行 / 否则 `HumanRejectedSuspension`）；
+>   `False` → 非阻塞卡片 + 通知。结果写 `_multi_skill_deep_conflict_resolution`；
+> - 双路比对：`GET /api/approvals/{id}/context` 的 `trace_comparisons`（按下文 4.4 节号段表）。
 
 ### 4.1 接口
 
@@ -239,9 +249,9 @@ SKILLEVAL_MULTISKILL_CORE_SKILL_IDS='["sql-runner","git-helper","doc-writer","cs
 
 | 预留位置 | 当前状态 | 由哪份文档接入 | 接入方式 |
 |---|---|---|---|
-| 真实告警通道 | 日志默认实现 | `22` | 第 4 节 |
-| 阻塞式人工介入（基石熔断） | `blocking=True` + 告警 payload | `22` / `24` | 第 4.3 节 |
-| 工作台双路 Trace 比对 | 数据已落库 | `22` | 第 4.4 节 |
+| 真实告警通道 | ✅ `22` 已实现（Discord） | `22` | 第 4 节 |
+| 阻塞式人工介入（基石熔断） | ✅ `22` 已实现：`deep_conflict_approval_gate` | `22` / `24` | 第 4 节开头说明；`24` 并入两个新私有键 |
+| 工作台双路 Trace 比对 | ✅ `22` 已实现：context API 的 `trace_comparisons` | `22` | 第 4.4 节 |
 | 主图装配 | 平铺入口就位 | `24` | 第 0~3 节 |
 | Hermes 多技能挂载 | 契约已登记 | 真实 Hermes 接入 | 第 5 节 |
 | 跨技能状态突变侦测（环境变量 / 共用中间文件被覆写） | **未实现**（`21` 已落地但未覆盖：沙箱指纹只证明起跑时环境一致，见 `interfaces/21` 第 5 节） | 后续 | 需要沙箱在步骤间隙上报文件 Hash 与环境变量快照（`HermesHookPayload` 追加字段），现有 Trace 只有最终 `fs_diff`，无从判定"是谁在何时改的" |

@@ -158,7 +158,8 @@ class GenerationCollapseError(GenerationError):
 - 触发：指纹不一致、**缺少黄金指纹**、黄金指纹非法、探测通道故障；金丝雀不可达/执行报错/校验不过。
 - **不写 `dimension_results`**，不生成任何维度 FAIL。`24` 在主图入口按 `PipelineSuspended` 处理即可；
   `22` 可按子类区分"找运维修环境"与"找评测负责人仲裁"，建议走**通知**而不是 `INJECT_*` 类审批
-  （修好环境后重跑整条流水线即可，没有"批准继续"的语义）。
+  （修好环境后重跑整条流水线即可，没有"批准继续"的语义）。✅ `22` 已按此实现：guard 写一张非阻塞
+  `ABANDON_RUN` 卡片 + 通知后原样上抛。
 
 ### 3.3 调度模式（`SKILLEVAL_PREFLIGHT_*`）
 
@@ -207,8 +208,8 @@ git diff golden_fingerprint.json   # 人工审核后提交；本仓库当前**�
 
 | 预留位置 | 当前状态 | 由谁接入 | 接入方式 |
 |---|---|---|---|
-| 连续坍塌 → 阻塞审批 | 抛 `GenerationCollapseError(requires_human_seed=True)` + 一次告警 | `22` | 在调用 `TestSuiteService` 的节点里按子类捕获，`request_human_approval(decision_type=INJECT_NEW_SEED)`；人工注入种子后 `sync-seed-anchors` 再恢复 |
-| 真实告警通道 | 日志默认实现 | `22` | `set_alert_dispatcher(...)`，按 `alert_type="generation_collapse_persistent"` 选卡片 |
+| 连续坍塌 → 阻塞审批 | ✅ `22` 已实现：节点级 guard 接成 `INJECT_NEW_SEED` 审批（仅冒出节点的坍塌；四处自行接住 `GenerationError` 的补题路径不升级，见 `interfaces/22` 第 1.1 节） | `22` | 在调用 `TestSuiteService` 的节点里按子类捕获，`request_human_approval(decision_type=INJECT_NEW_SEED)`；人工注入种子后 `sync-seed-anchors` 再恢复 |
+| 真实告警通道 | ✅ `22` 已实现（Discord，CLI `generate` / `generate-attacks` 入口已注册） | `22` | `set_alert_dispatcher(...)`，按 `alert_type="generation_collapse_persistent"` 选卡片 |
 | `case_embeddings` 近邻检索 | HNSW 索引已建，未使用 | `23` | 同表 `embedding <=> :q`；`search_documents` 仍按 23 设计独立建表 |
 | 种子锚点混合检索 | 单一 embedding 相似度 | `23` | 替换 `SeedAnchorResolver.resolve_for_skill` 函数体 |
 | 主图 Phase 0 | 平铺入口就位 | `24` | 第 0、3.1 节 |

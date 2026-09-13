@@ -27,12 +27,13 @@ from skill_evaluate.agents.optimizer.service import OptimizerAgent
 from skill_evaluate.config import get_settings
 from skill_evaluate.errors import PatchApplyError
 from skill_evaluate.logging import get_logger
+from skill_evaluate.persistence.approval_service import ApprovalService
 from skill_evaluate.persistence.repository import (
     HumanApprovalRepository,
     PatchRepository,
     PipelineStateRepository,
 )
-from skill_evaluate.persistence.suspension import suspend_and_wait
+from skill_evaluate.state.approval import OUTCOME_ADOPT, ApprovalDecisionType
 from skill_evaluate.state.patch import Patch, PatchApplicationResult
 from skill_evaluate.state.skill import SkillDefinition
 
@@ -40,7 +41,7 @@ logger = get_logger(component="optimization_loop")
 
 # 达到最大重试次数后挂起时，人工侧回传的 resume payload 约定（docs/dev/22 接住）。
 # 取值：`adopt` = 采纳当前候选补丁；其余（含 None）= 放弃，判该 Skill 评测最终失败。
-RESUME_ADOPT = "adopt"
+RESUME_ADOPT = OUTCOME_ADOPT  # docs/dev/22 起与 state/approval.py 的 outcome 常量同源
 
 
 class LoopResult(BaseModel):
@@ -64,13 +65,18 @@ class OptimizationLoop:
         patch_repository: PatchRepository | None = None,
         pipeline_state_repository: PipelineStateRepository | None = None,
         approval_repository: HumanApprovalRepository | None = None,
+        approval_service: ApprovalService | None = None,
     ) -> None:
         self.max_retries = (
             get_settings().optimizer.max_retries if max_retries is None else max_retries
         )
         self._patch_repo = patch_repository or PatchRepository()
         self._state_repo = pipeline_state_repository or PipelineStateRepository()
-        self._approval_repo = approval_repository or HumanApprovalRepository()
+        # docs/dev/22：挂起统一走 ApprovalService（账本 + 工作台卡片 + Discord + 挂起）。
+        # 保留 `approval_repository` 参数的向后兼容：只传它时，账本仍写进这个仓储。
+        self._approval_service = approval_service or ApprovalService(
+            ledger_repository=approval_repository or HumanApprovalRepository()
+        )
 
     async def run(
         self,
@@ -160,16 +166,23 @@ class OptimizationLoop:
             await self._state_repo.increment_retry(run_id, node_name)
             working_skill = patched_skill
 
-        return await self._suspend(run_id, node_name, thread_id or run_id, last_patch)
+        return await self._suspend(run_id, node_name, ctx, thread_id, last_patch)
 
     async def _suspend(
-        self, run_id: str, node_name: str, thread_id: str, last_patch: Patch | None
+        self,
+        run_id: str,
+        node_name: str,
+        ctx: FailureContext,
+        thread_id: str | None,
+        last_patch: Patch | None,
     ) -> Patch | None:
-        """耗尽重试后挂起等待人工裁决（docs/dev/04 的挂起机制 + docs/dev/22 的工作台）。"""
+        """耗尽重试后挂起等待人工裁决（docs/dev/22 `ACCEPT_PATCH` 卡片）。
+
+        `thread_id` 未显式传入时由 ApprovalService 按 `f"{skill_id}:{run_id}"` 解析——与
+        `persistence/checkpointer.py` 及 Hermes Hook 的唤醒口径一致（docs/dev/09 当初默认的
+        `thread_id = run_id` 会让人工批准后唤醒一个不存在的 thread）。
+        """
         wait_key = f"{run_id}:{node_name}"
-        await self._approval_repo.create(
-            run_id=run_id, node_name=node_name, thread_id=thread_id, wait_key=wait_key
-        )
         logger.error(
             "optimizer_max_retries_exceeded",
             run_id=run_id,
@@ -179,9 +192,27 @@ class OptimizationLoop:
             candidate_patch_id=last_patch.patch_id if last_patch else None,
         )
 
-        decision: Any = await suspend_and_wait(
-            reason=f"optimizer_max_retries_exceeded:{node_name}",
+        decision: Any = await self._approval_service.request_human_approval(
+            run_id=run_id,
             wait_key=wait_key,
+            decision_type=ApprovalDecisionType.ACCEPT_PATCH,
+            context_summary=(
+                f"优化闭环（角色 {ctx.role}）连续 {self.max_retries} 轮补丁均未通过重测，"
+                f"Skill `{ctx.skill.skill_id}`。请查看候选补丁 diff 与每轮重测结果，"
+                "决定采纳最后一个候选补丁（adopt）或放弃本次评测（abandon）。"
+            ),
+            # 工作台据此展开 patches / patch_application_results / node_retry_counts。
+            context_ref={
+                "patch_id": last_patch.patch_id if last_patch else None,
+                "role": ctx.role,
+                "skill_id": ctx.skill.skill_id,
+                "skill_version_ref": ctx.skill.version_ref,
+                "max_retries": self.max_retries,
+            },
+            node_name=node_name,
+            skill_id=ctx.skill.skill_id,
+            thread_id=thread_id,
+            reason=f"optimizer_max_retries_exceeded:{node_name}",
         )
         if _is_adopt(decision):
             logger.warning(

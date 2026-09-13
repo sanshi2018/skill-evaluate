@@ -24,9 +24,11 @@ from skill_evaluate.agents.optimizer import (
     build_failure_context,
     cleanup_working_copy,
 )
-from skill_evaluate.agents.optimizer import loop as loop_module
 from skill_evaluate.agents.optimizer.patch_applier import WORKING_COPY_MARKER
 from skill_evaluate.errors import AgentError, PatchApplyError
+from skill_evaluate.observability.discord_notifier import LoggingApprovalNotifier
+from skill_evaluate.persistence import suspension as suspension_module
+from skill_evaluate.persistence.approval_service import ApprovalService
 from skill_evaluate.state.enums import (
     DatasetSplit,
     JudgeVerdictStatus,
@@ -154,6 +156,23 @@ class FakeApprovalRepo:
         self.created.append(
             {"run_id": run_id, "node_name": node_name, "thread_id": thread_id, "wait_key": wait_key}
         )
+
+class FakePendingApprovalRepo:
+    """docs/dev/22：`pending_approvals` 的内存替身（按 wait_key 去重，与库层唯一约束同口径）。"""
+
+    def __init__(self) -> None:
+        self.saved: dict[str, Any] = {}
+
+    async def save(self, approval: Any) -> bool:
+        if approval.wait_key in self.saved:
+            return False
+        self.saved[approval.wait_key] = approval
+        return True
+
+
+class FakeRunRepo:
+    async def get(self, run_id: str) -> Any:
+        return None
 
 
 # --------------------------------------------------------------------------- #
@@ -466,7 +485,12 @@ def _loop() -> tuple[OptimizationLoop, FakePatchRepo, FakeStateRepo, FakeApprova
         max_retries=3,
         patch_repository=patch_repo,  # type: ignore[arg-type]
         pipeline_state_repository=state_repo,  # type: ignore[arg-type]
-        approval_repository=approval_repo,  # type: ignore[arg-type]
+        approval_service=ApprovalService(
+            ledger_repository=approval_repo,
+            pending_repository=FakePendingApprovalRepo(),  # type: ignore[arg-type]
+            run_repository=FakeRunRepo(),
+            notifier=LoggingApprovalNotifier(),
+        ),
     )
     return loop, patch_repo, state_repo, approval_repo
 
@@ -559,7 +583,7 @@ class OptimizationLoopTests:
         async def retest(skill: SkillDefinition) -> LoopResult:
             return LoopResult(passed=False, detail="还是不过")
 
-        monkeypatch.setattr(loop_module, "suspend_and_wait", fake_suspend)
+        monkeypatch.setattr(suspension_module, "suspend_and_wait", fake_suspend)
         patch = await loop.run("run-1", ctx, retest, optimizer)  # type: ignore[arg-type]
 
         # 架构文档要求"安全挂起状态机"而不是直接判负。
@@ -567,6 +591,8 @@ class OptimizationLoopTests:
         assert len(state_repo.increments) == 3
         assert suspended[0]["reason"] == "optimizer_max_retries_exceeded:optimizer:prompt_engineer"
         assert approval_repo.created[0]["wait_key"] == "run-1:optimizer:prompt_engineer"
+        # docs/dev/22：未显式传 thread_id 时按主图口径 skill_id:run_id 解析。
+        assert approval_repo.created[0]["thread_id"] == f"{_skill().skill_id}:run-1"
 
     async def test_human_can_adopt_the_last_candidate_patch(
         self, monkeypatch: pytest.MonkeyPatch
@@ -581,7 +607,7 @@ class OptimizationLoopTests:
         async def retest(skill: SkillDefinition) -> LoopResult:
             return LoopResult(passed=False, detail="还是不过")
 
-        monkeypatch.setattr(loop_module, "suspend_and_wait", fake_suspend)
+        monkeypatch.setattr(suspension_module, "suspend_and_wait", fake_suspend)
         patch = await loop.run("run-1", ctx, retest, optimizer)  # type: ignore[arg-type]
         assert patch is not None and patch.patch_id == "p-1"
 
@@ -599,7 +625,7 @@ class OptimizationLoopTests:
         async def retest(skill: SkillDefinition) -> LoopResult:
             return LoopResult(passed=False, detail="x")
 
-        monkeypatch.setattr(loop_module, "suspend_and_wait", fake_suspend)
+        monkeypatch.setattr(suspension_module, "suspend_and_wait", fake_suspend)
         assert await loop.run("run-1", ctx, retest, optimizer) is None  # type: ignore[arg-type]
 
     async def test_security_role_can_plug_in_a_double_regression_retest(self) -> None:

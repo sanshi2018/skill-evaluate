@@ -45,6 +45,12 @@ KEY_ROLE_OUTCOME = "_multi_skill_role_outcome"
 KEY_TEMPORAL_OUTCOME = "_multi_skill_temporal_outcome"
 KEY_CORE_REGRESSION_OUTCOME = "_multi_skill_core_regression_outcome"
 KEY_ALERT_DISPATCHED = "_multi_skill_alert_dispatched"
+# docs/dev/22：收尾节点把"达到告警条件时的告警 payload"写进状态，供审批闸门节点决定
+# 阻塞挂起还是只发通知。与 KEY_ALERT_DISPATCHED 分开：告警通道故障（dispatched=False）
+# 不应让人工介入一起消失——卡片走的是 pending_approvals，不依赖告警通道。
+KEY_DEEP_CONFLICT_ALERT = "_multi_skill_deep_conflict_alert"
+# 闸门节点的处理结果：None（未达告警条件）/ "notified"（非阻塞通知）/ "acknowledge"（人工已知悉放行）
+KEY_DEEP_CONFLICT_RESOLUTION = "_multi_skill_deep_conflict_resolution"
 
 
 class MultiSkillState(PipelineState, total=False):
@@ -67,6 +73,8 @@ class MultiSkillState(PipelineState, total=False):
     _multi_skill_temporal_outcome: dict[str, object]
     _multi_skill_core_regression_outcome: dict[str, object]
     _multi_skill_alert_dispatched: bool  # 本次运行是否发出了深度冲突告警（22/24 读取）
+    _multi_skill_deep_conflict_alert: dict[str, object] | None  # 告警 payload（22 闸门读取）
+    _multi_skill_deep_conflict_resolution: str | None  # 22 闸门的处理结果
 
 
 __all__ = [
@@ -78,6 +86,8 @@ __all__ = [
     "KEY_CONTEXT_NOTES",
     "KEY_CORE_REGRESSION_OUTCOME",
     "KEY_CORE_SKILL_REFS",
+    "KEY_DEEP_CONFLICT_ALERT",
+    "KEY_DEEP_CONFLICT_RESOLUTION",
     "KEY_HIJACK_OUTCOME",
     "KEY_NAMESPACE_OUTCOME",
     "KEY_NOISE_PACK_REFS",

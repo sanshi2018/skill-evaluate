@@ -1,8 +1,12 @@
 # 接入文档：人工审批回调端点（hooks_approval.py）
 
 > 由谁接入：docs/dev/22（容错机制与人工审批闭环）。
-> 当前状态：`src/skill_evaluate/api/hooks_approval.py` 里的
-> `POST /hooks/approval/{run_id}/{node_name}` 恒返回 `501 Not Implemented`。
+> 当前状态：✅ **已由 docs/dev/22 实现**。`POST /hooks/approval/{run_id}/{node_name}` 校验
+> `X-Approval-Signature`（密钥 `SKILLEVAL_APPROVAL_HMAC_SECRET`）后定位该节点最新的 pending 卡片，
+> 走与 `POST /api/approvals/{id}/decide` 相同的决策逻辑；挂起侧统一改走
+> `persistence/approval_service.py::request_human_approval()`（它会同时写 `human_approvals` 账本与
+> `pending_approvals` 卡片）。下文保留为历史设计记录，现行契约见
+> `docs/dev/interfaces/22_human_approval_workbench.md`。
 
 ## 已就绪的基础设施（22 可直接复用，不必重新设计）
 

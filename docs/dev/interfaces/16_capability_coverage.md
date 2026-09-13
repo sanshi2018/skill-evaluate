@@ -244,6 +244,11 @@ P2 则相反；取中间档错得最不离谱。
 
 ## 5. `22`：接住能力树规模超阈值的人工审核卡片
 
+> ✅ **`22` 已接入**：挂起改走 `CoverageDeps.approvals().request_human_approval(CONFIRM_TREE_REVIEW)`，
+> 同时写 `human_approvals` 账本与 `pending_approvals` 卡片（`context_ref` 含 skill_id / version_ref /
+> capability_count / threshold，工作台据此展开能力树）。⚠️ 下文的 `thread_id = run_id` **已修正为**
+> `f"{skill_id}:{run_id}"`；未确认时改抛 `HumanRejectedSuspension`（`PipelineSuspended` 子类）。
+
 `extract_capability_tree` 在 `len(tree.nodes) > capability_count_review_threshold`
 （默认 20）时挂起，这是架构文档给模块六"应对方案"的落地点。
 

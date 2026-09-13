@@ -19,6 +19,17 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _ALEMBIC_INI = _REPO_ROOT / "alembic.ini"
 
 
+def _configure_notifications() -> None:
+    """按配置注册 Discord 审批卡片 / 告警通道（docs/dev/22 第 4 节）。
+
+    出题命令可能触发 docs/dev/21 的"连续坍塌"告警；不注册的话告警只进本地日志，
+    在 CI 里跑的出题任务等于没人收到。延迟导入：不需要通知的命令不必加载 httpx 等依赖。
+    """
+    from skill_evaluate.observability.discord_notifier import configure_notification_channels
+
+    configure_notification_channels()
+
+
 @app.command()
 def run(skill_path: str, force_regenerate: bool = False) -> None:
     """对指定 SKILL.md 运行完整评测流水线（graph/ 由 docs/dev/24 接入）。"""
@@ -47,6 +58,7 @@ def generate(
     分数失去可比性。
     """
     configure_logging()
+    _configure_notifications()
 
     from skill_evaluate.agents.generator import GeneratorAgent, TestSuiteService
     from skill_evaluate.ingestion import load_skill
@@ -116,6 +128,7 @@ def generate_attacks(
     **CI 默认调用路径不带 `--force`**：必须由人显式加上。
     """
     configure_logging()
+    _configure_notifications()
 
     from skill_evaluate.agents.attacker import AttackerService, default_adversarial_count
     from skill_evaluate.ingestion import load_skill

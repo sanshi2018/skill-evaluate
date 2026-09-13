@@ -62,7 +62,7 @@ src/skill_evaluate/persistence/
 | `security_findings` | `SecurityFinding` | `case_id`, `severity` |
 | `assertion_specs` / `assertion_results` | `AssertionSpec` / `AssertionResult` | `case_id` |
 | `pending_hooks` | 无对应 Pydantic 模型，见第 5 节 | `run_id, case_id, run_index` |
-| `human_approvals` | 无对应 Pydantic 模型，文档 22 详述，此处先建表占位 | `run_id, node_name, status` |
+| `human_approvals` | 无对应 Pydantic 模型，文档 22 详述，此处先建表占位（⚠️ 文档 22 实现后保留为阻塞审批的**挂起账本**，业务卡片在新表 `pending_approvals` / `approval_decisions`，迁移 `0010`） | `run_id, node_name, status` |
 
 **JSONB 使用原则**：凡是"随该记录一起读写、不需要独立跨记录检索"的嵌套结构（如 `ExecutionTrace.actions`、`CapabilityTree.nodes`）用 JSONB 内嵌，不拆多表——这是 CI 评测系统的读写模式（写多读少、按整条记录读取）决定的，拆表反而增加 join 成本且没有实际收益。
 

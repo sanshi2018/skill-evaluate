@@ -190,6 +190,12 @@ await GoldenCaseRepository().save(
 
 ## 4. 冻结机制：`22` 与 `24` 的接入点
 
+> ✅ **`22` 已接入**：冻结时 `JudgeHealthMonitor.check()` 经 `dispatch_alert(alert_type="judge_frozen",
+> run_id="platform:judge_health")` 推送（Discord 注册后即发卡片，日志事件保留）；`JudgeFrozenError`
+> 追加 `model` / `temperature` 字段。维度节点里冒出的 `JudgeFrozenError` 由节点级 guard
+> （`nodes/approval_guard.py`）接成 `UNFREEZE_JUDGE` 阻塞审批，人选 `unfreeze` 时决策 API 先调
+> `unfreeze()` 再唤醒节点重跑。黄金用例维护指引见 `interfaces/22` 第 6 节。
+
 失误率超过 5%（`SKILLEVAL_JUDGE_MISS_RATE_THRESHOLD`）时，该 Judge 配置
 （`(model, temperature_bucket)` 粒度）被冻结，后续 `judgmental_verdict()` 直接抛
 `JudgeFrozenError`。

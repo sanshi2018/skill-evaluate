@@ -618,6 +618,30 @@ class ApiSettings(BaseSettings):
     internal_base_url: str = "http://localhost:8000"
 
 
+class ApprovalSettings(BaseSettings):
+    """人工审批闭环与通知通道（docs/dev/22 第 4 节，追加式扩展）。
+
+    `discord_webhook_url` 为空时不注册 Discord 通道：审批卡片与告警退回到"只写结构化日志"
+    的默认实现（`LoggingApprovalNotifier` / `LoggingAlertDispatcher`），**审批流程本身照常
+    工作**——卡片仍然落库、工作台 API 仍可决策。通知是导流手段，不是审批的前置条件。
+    """
+
+    model_config = SettingsConfigDict(env_prefix="SKILLEVAL_APPROVAL_")
+
+    # Webhook URL 本身就是凭据（拿到即可往频道里发消息），因此用 SecretStr，避免进日志。
+    discord_webhook_url: SecretStr = SecretStr("")
+    # 审查工作台（Base44 或自建前端）的根地址，卡片里的深度链接据此拼接。
+    workbench_base_url: str = "http://localhost:3000"
+    # 外部系统（工作台自动化、Base44 Webhook 动作）调用 `POST /hooks/approval/...` 时的
+    # HMAC 密钥（`X-Approval-Signature`）。与 Hermes/Llama 分开：信任边界不同。
+    hmac_secret: SecretStr = SecretStr("")
+    notify_timeout_s: float = 10.0  # 单次 Discord 请求超时；通知失败不阻断审批
+    # 同一节点同一次执行里最多发起几轮"重试型"审批（ABANDON_RUN 的 retry、INJECT_NEW_SEED、
+    # UNFREEZE_JUDGE）。每轮人工批准后节点会重跑一次内部逻辑，若问题依旧就再问一次；
+    # 设上限是为了防止"人一直点重试、问题一直不消失"时无限消耗沙箱与 LLM 调用。
+    max_approval_rounds_per_node: int = 3
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -645,6 +669,7 @@ class Settings(BaseSettings):
     validator: ValidatorSettings = Field(default_factory=ValidatorSettings)
     langfuse: LangfuseSettings = Field(default_factory=LangfuseSettings)
     api: ApiSettings = Field(default_factory=ApiSettings)
+    approval: ApprovalSettings = Field(default_factory=ApprovalSettings)
 
 
 @lru_cache

@@ -39,7 +39,18 @@ class JudgeFrozenError(SkillEvaluateError):
     语义约定：抛出后**不允许**调用方降级为"那就当它 PASS 吧"继续跑——一个已被
     证明会误判的裁判给出的任何结论都不该进报告。正确处理是让流水线整体挂起，
     等人工调整 Prompt / 更换模型后解冻（docs/dev/22 审批工作台）。
+
+    `model` / `temperature`（docs/dev/22 追加，可选、向后兼容）：审批卡片据此定位要解冻的
+    是哪一个 `(model, temperature_bucket)` 配置——解冻 API 需要这两个值，只有一段报错文本
+    的话，人得自己去 `judge_health_status` 表里猜。
     """
+
+    def __init__(
+        self, message: str, *, model: str | None = None, temperature: float | None = None
+    ) -> None:
+        super().__init__(message)
+        self.model = model
+        self.temperature = temperature
 
 
 class PatchApplyError(SkillEvaluateError):
@@ -53,6 +64,20 @@ class PatchApplyError(SkillEvaluateError):
 
 class PipelineSuspended(SkillEvaluateError):
     """需要 interrupt_before 挂起等待人工审批（见 docs/dev/04、09、22）。"""
+
+
+class HumanRejectedSuspension(PipelineSuspended):
+    """人工已经在审批卡片上明确说"不"（放弃补丁 / 不确认能力树 / 放弃本次评测）后抛出（docs/dev/22）。
+
+    继承 `PipelineSuspended`：对流水线而言语义不变（整体停下、不产出假结论），既有
+    `except PipelineSuspended` / `pytest.raises(PipelineSuspended)` 的调用方无需改动。
+
+    单独建子类是为了让 `nodes/approval_guard.py` 分得清两种挂起：
+    - 普通 `PipelineSuspended`（如共识未达成）——**还没问过人**，guard 应当发起一张
+      `ABANDON_RUN` 审批卡片让人决定重试还是放弃；
+    - 本类——**人已经决定过了**，guard 必须原样放行，否则人刚点完"放弃"又会收到一张
+      "要不要放弃"的卡片。
+    """
 
 
 class InfrastructureEnvironmentError(PipelineSuspended):

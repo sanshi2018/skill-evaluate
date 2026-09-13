@@ -22,6 +22,7 @@ from skill_evaluate.errors import ConfigurationError
 from skill_evaluate.executors.routing import resolve_backend_type
 from skill_evaluate.nodes.coverage.state import ROUTING_KEY
 from skill_evaluate.observability.report_generator import ReportGenerator
+from skill_evaluate.persistence.approval_service import ApprovalService
 from skill_evaluate.persistence.repository import (
     CapabilityRepository,
     HumanApprovalRepository,
@@ -50,6 +51,9 @@ class CoverageDeps:
     capability_repository: CapabilityRepository = field(default_factory=CapabilityRepository)
     judge_repository: JudgeRepository = field(default_factory=JudgeRepository)
     approval_repository: HumanApprovalRepository = field(default_factory=HumanApprovalRepository)
+    # docs/dev/22：统一审批入口。None = 惰性构造，账本写进上面的 `approval_repository`
+    # （保持既有注入方式可用）；测试可整体替换成不碰库、不需要图上下文的实现。
+    approval_service: ApprovalService | None = None
     # None 表示"从配置读 CoverageSettings"。测试与"某个仓库想把达标线放宽到 0.8"
     # 都可以整体覆盖一份 settings，而不是逐个参数传。
     coverage_settings: CoverageSettings | None = None
@@ -83,6 +87,11 @@ class CoverageDeps:
         if self.suite_service is None:
             self.suite_service = TestSuiteService()
         return self.suite_service
+
+    def approvals(self) -> ApprovalService:
+        if self.approval_service is None:
+            self.approval_service = ApprovalService(ledger_repository=self.approval_repository)
+        return self.approval_service
 
     def reporter(self) -> ReportGenerator:
         if self.report_generator is None:

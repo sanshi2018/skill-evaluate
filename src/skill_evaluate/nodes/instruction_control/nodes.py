@@ -62,7 +62,12 @@ from skill_evaluate.agents.optimizer.loop import LoopResult
 from skill_evaluate.agents.optimizer.patch_applier import working_version_ref
 from skill_evaluate.agents.optimizer.schema import ROLE_PROMPT_ENGINEER
 from skill_evaluate.agents.optimizer.service import build_failure_context
-from skill_evaluate.errors import ConfigurationError, PersistenceError, PipelineSuspended
+from skill_evaluate.errors import (
+    ConfigurationError,
+    HumanRejectedSuspension,
+    PersistenceError,
+    PipelineSuspended,
+)
 from skill_evaluate.executors.base import ExecutionRequest
 from skill_evaluate.logging import get_logger
 from skill_evaluate.nodes.instruction_control import rules
@@ -859,7 +864,9 @@ class InstructionControlPipeline:
         if patch is None:
             # 闭环耗尽重试后已经挂起过一次；走到这里意味着人工明确选择了"放弃该补丁"。
             # 此时不该拿旧正文去跑收尾节点假装无事发生——直接判该 Skill 本维度失败。
-            raise PipelineSuspended(
+            # docs/dev/22：人已在 ACCEPT_PATCH 卡片上选了放弃——用 HumanRejectedSuspension 让
+            # nodes/approval_guard.py 原样放行，而不是再发一张"要不要放弃"的卡片。
+            raise HumanRejectedSuspension(
                 f"{NODE_NAMES['optimizer_loop']}：优化闭环超出最大重试次数且人工未采纳补丁，"
                 f"run_id={run_id}，失败训练用例={failed_case_ids}"
             )

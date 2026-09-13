@@ -499,3 +499,58 @@ class CanaryProbeHistoryORM(Base):
     passed: Mapped[bool] = mapped_column(Boolean, nullable=False)
     reasons: Mapped[list[Any]] = mapped_column(JSONB, default=list)
     probed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+# --------------------------------------------------------------------------- #
+# docs/dev/22：容错机制与人工审批闭环
+# --------------------------------------------------------------------------- #
+
+
+class PendingApprovalORM(Base):
+    """统一的人工审批卡片（docs/dev/22 第 2 节，契约见 `state/approval.py::PendingApproval`）。
+
+    与 `human_approvals` 并存而非替换（偏差说明见 `state/approval.py` 模块头）：那张表是
+    挂起账本，本表是工作台展示的业务卡片。
+
+    `wait_key` 唯一：挂起节点在恢复时会整体重跑，第二次写入必须被库层去重。
+    `status` 建索引：工作台主查询是"列出 pending"，而已处理的卡片会长期留存作审计。
+    """
+
+    __tablename__ = "pending_approvals"
+
+    approval_id: Mapped[str] = mapped_column(String, primary_key=True)
+    run_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    wait_key: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    decision_type: Mapped[str] = mapped_column(String, nullable=False)
+    node_name: Mapped[str] = mapped_column(String, nullable=False)
+    thread_id: Mapped[str] = mapped_column(String, nullable=False)
+    context_summary: Mapped[str] = mapped_column(String, nullable=False)
+    context_ref: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    # False = 第 8.1 节的非阻塞通知：没有挂起点，决策时不调 resolve_suspension。
+    blocking: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    status: Mapped[str] = mapped_column(String, default="pending", index=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ApprovalDecisionORM(Base):
+    """人对审批卡片的决定（审计记录）。
+
+    `approval_id` 唯一（一张卡片只能被决定一次）：两个人在工作台上几乎同时点了"采纳"
+    与"放弃"时，由库层唯一约束裁决先到者，后到者得到 409，而不是两条互相矛盾的审计
+    记录外加一次不确定的唤醒。
+    """
+
+    __tablename__ = "approval_decisions"
+
+    decision_id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid_str)
+    approval_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("pending_approvals.approval_id", ondelete="CASCADE"),
+        unique=True,
+        nullable=False,
+    )
+    decided_by: Mapped[str] = mapped_column(String, nullable=False)
+    outcome: Mapped[str] = mapped_column(String, nullable=False)
+    note: Mapped[str | None] = mapped_column(String, nullable=True)
+    decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

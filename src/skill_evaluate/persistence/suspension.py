@@ -38,6 +38,16 @@ def register_graph_resumer(resumer: GraphResumer) -> None:
     _graph_resumer = resumer
 
 
+def is_graph_resumer_registered() -> bool:
+    """是否已注册 GraphResumer（docs/dev/22 追加）。
+
+    人工审批决策 API 在**写任何状态之前**先查这一项：`resolve_suspension()` 会先把账本
+    迁移到 resolved 再调 resumer，未注册时抛错的那一刻账本已经改了，同一张卡片再也唤醒
+    不了。提前拒绝（503）能让人等主图装好后重新点一次。
+    """
+    return _graph_resumer is not None
+
+
 def _get_graph_resumer() -> GraphResumer:
     if _graph_resumer is None:
         raise ConfigurationError(

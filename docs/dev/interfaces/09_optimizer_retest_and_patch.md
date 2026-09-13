@@ -166,6 +166,13 @@ cleanup_working_copy(working_skill)   # 只删带 .skilleval-working-copy 标记
 
 ## 6. `22`：接住挂起点
 
+> ✅ **`22` 已接入**：`_suspend()` 改走 `ApprovalService.request_human_approval(ACCEPT_PATCH)`，
+> 除账本外还写一张 `pending_approvals` 卡片（`context_ref.patch_id` 等）并发 Discord 卡片。
+> ⚠️ **口径修正**：`thread_id` 默认不再取 `run_id`，而是 `f"{skill_id}:{run_id}"`（与
+> `checkpointer.thread_id_for` / Hermes Hook 一致）。工作台回传的 payload 形状为
+> `{"decision": "adopt" | "abandon", ...}`，下表解析逻辑不变。新增构造参数 `approval_service`。
+> 下游节点在 `run()` 返回 `None` 后应抛 `HumanRejectedSuspension`（11/13/15 已改）。
+
 耗尽 `max_retries`（默认 3，`SKILLEVAL_OPTIMIZER_MAX_RETRIES`）后：
 
 1. 往 `human_approvals` 写一条 waiting 记录，`wait_key = f"{run_id}:optimizer:{role}"`，

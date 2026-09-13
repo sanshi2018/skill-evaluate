@@ -15,6 +15,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from skill_evaluate.errors import PersistenceError
 from skill_evaluate.persistence.db import new_session
 from skill_evaluate.persistence.models import (
+    ApprovalDecisionORM,
     AssertionResultORM,
     AssertionSpecORM,
     CanaryProbeHistoryORM,
@@ -32,6 +33,7 @@ from skill_evaluate.persistence.models import (
     NodeRetryCountORM,
     PatchApplicationResultORM,
     PatchORM,
+    PendingApprovalORM,
     PendingHookORM,
     RunORM,
     SecurityFindingORM,
@@ -40,10 +42,17 @@ from skill_evaluate.persistence.models import (
     TestCaseSuggestionORM,
     TestSuiteVersionORM,
 )
+from skill_evaluate.state.approval import (
+    ApprovalDecision,
+    ApprovalDecisionType,
+    ApprovalStatus,
+    PendingApproval,
+)
 from skill_evaluate.state.assertion import AssertionResult, AssertionSpec
 from skill_evaluate.state.capability import CapabilityTree
 from skill_evaluate.state.enums import (
     AssertionStrategy,
+    DatasetSplit,
     SuggestionStatus,
     SuggestionType,
     TestCaseCategory,
@@ -208,6 +217,29 @@ class TestCaseRepository:
                 )
             ).scalars()
             return [_orm_to_test_case(r) for r in rows]
+
+    async def retire(self, case_id: str) -> bool:
+        """把一条用例归档为 `COLD`（docs/dev/22 第 7 节：孤儿用例退役的真正动作）。
+
+        **归档而不是删除**：`execution_traces` / `judge_verdicts` / `case_embeddings` 都以
+        case_id 关联这条用例，物理删除会让历史报告里的证据链断掉。`COLD` 早在 docs/dev/02
+        就被设计为"惰性过滤"区——按 TRAIN/VALIDATION 取题的维度天然看不到它，也就"不再
+        参与任何主动评测"，同时它仍在 `test_suite_versions.case_ids` 里，历史版本可复现。
+
+        只有工作台的人工确认路径会调用本方法（docs/dev/17 第 5.2 节的约束）。
+        返回是否真的改动了一行（用例不存在或已是 COLD 时为 False，调用方据此记日志，天然幂等）。
+        """
+        async with new_session() as session:
+            result = await session.execute(
+                update(TestCaseORM)
+                .where(
+                    TestCaseORM.case_id == case_id,
+                    TestCaseORM.split != DatasetSplit.COLD.value,
+                )
+                .values(split=DatasetSplit.COLD.value)
+            )
+            await session.commit()
+            return result.rowcount > 0  # type: ignore[attr-defined,no-any-return]
 
 
 def _test_case_values(case: TestCase) -> dict[str, object]:
@@ -686,7 +718,13 @@ class PendingHookRepository:
 
 
 class HumanApprovalRepository:
-    """`human_approvals` 表占位存取（docs/dev/22 详述具体业务字段与 API）。"""
+    """`human_approvals` 表存取：阻塞式人工审批的**挂起账本**（docs/dev/04 第 5 节）。
+
+    docs/dev/22 落地后本表的定位没有变——它只记 `wait_key` 的 waiting → resolved，供
+    `resolve_suspension()` 做幂等唤醒；卡片的业务内容（decision_type、摘要、证据引用）在
+    `pending_approvals`（`PendingApprovalRepository`）。挂起点不应再直接调用 `create()`，
+    统一走 `persistence/approval_service.py::request_human_approval()`，它会把两张表一起写好。
+    """
 
     async def create(self, *, run_id: str, node_name: str, thread_id: str, wait_key: str) -> None:
         async with new_session() as session:
@@ -1051,6 +1089,26 @@ class PatchRepository:
             await session.execute(stmt)
             await session.commit()
 
+    async def get_application_result(self, patch_id: str) -> PatchApplicationResult | None:
+        """某个补丁的应用/重测结果（docs/dev/22 工作台展开 ACCEPT_PATCH 卡片时读取）。"""
+        async with new_session() as session:
+            row = (
+                await session.execute(
+                    select(PatchApplicationResultORM).where(
+                        PatchApplicationResultORM.patch_id == patch_id
+                    )
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                return None
+            return PatchApplicationResult(
+                patch_id=row.patch_id,
+                applied=row.applied,
+                regression_passed=row.regression_passed,
+                working_skill_version_ref=row.working_skill_version_ref,
+                detail=row.detail,
+            )
+
     async def list_by_skill(self, skill_id: str) -> list[Patch]:
         async with new_session() as session:
             rows = (
@@ -1158,6 +1216,18 @@ class TestCaseSuggestionRepository:
             # `Result` 的静态类型上没有 rowcount（只有 `CursorResult` 有），与本文件
             # 其余 `rowcount` 用法同一处理：忽略这一条，不为它把返回类型放宽。
             return bool(result.rowcount)  # type: ignore[attr-defined]
+
+    async def get(self, suggestion_id: str) -> TestCaseSuggestion | None:
+        """按 id 取一条建议（docs/dev/22 工作台决策前读取当前状态）。"""
+        async with new_session() as session:
+            row = (
+                await session.execute(
+                    select(TestCaseSuggestionORM).where(
+                        TestCaseSuggestionORM.suggestion_id == suggestion_id
+                    )
+                )
+            ).scalar_one_or_none()
+            return _orm_to_suggestion(row) if row else None
 
     async def list_by_status(
         self, status: SuggestionStatus, *, suggestion_type: SuggestionType | None = None
@@ -1352,6 +1422,37 @@ class GenerationCollapseEventRepository:
                 query = query.where(GenerationCollapseEventORM.occurred_at > since)
             return int((await session.execute(query)).scalar_one())
 
+    async def list_recent(self, *, skill_id: str, limit: int = 10) -> list[dict[str, object]]:
+        """最近若干次坍塌事件（docs/dev/22 工作台展开 INJECT_NEW_SEED 卡片时读取）。
+
+        返回 dict 而不是 `GenerationCollapseEvent`：工作台只做展示，直接 JSON 化即可。
+        """
+        async with new_session() as session:
+            rows = (
+                await session.execute(
+                    select(GenerationCollapseEventORM)
+                    .where(GenerationCollapseEventORM.skill_id == skill_id)
+                    .order_by(desc(GenerationCollapseEventORM.occurred_at))
+                    .limit(limit)
+                )
+            ).scalars()
+            return [
+                {
+                    "event_id": r.event_id,
+                    "generator_run_id": r.generator_run_id,
+                    "generation_mode": r.generation_mode,
+                    "triggered_by": r.triggered_by,
+                    "reason": r.reason,
+                    "avg_distance_to_history": r.avg_distance_to_history,
+                    "intra_batch_distance": r.intra_batch_distance,
+                    "threshold": r.threshold,
+                    "historical_count": r.historical_count,
+                    "new_case_count": r.new_case_count,
+                    "occurred_at": r.occurred_at.isoformat(),
+                }
+                for r in rows
+            ]
+
 
 class CanaryProbeHistoryRepository:
     """`canary_probe_history` 表存取（docs/dev/21 第 6 节）。"""
@@ -1393,4 +1494,159 @@ class CanaryProbeHistoryRepository:
                 passed=row.passed,
                 reasons=list(row.reasons or []),
                 probed_at=row.probed_at,
+            )
+
+
+# --------------------------------------------------------------------------- #
+# docs/dev/22：容错机制与人工审批闭环
+# --------------------------------------------------------------------------- #
+
+
+class PendingApprovalRepository:
+    """`pending_approvals` 表存取：统一审批卡片（docs/dev/22 第 2 节）。
+
+    写入方只有 `persistence/approval_service.py`（挂起点经由它），推进状态的只有决策 API。
+    """
+
+    async def save(self, approval: PendingApproval) -> bool:
+        """写入一张卡片；`wait_key` 已存在时什么都不做，返回是否真的插入了新行。
+
+        返回值决定"要不要发 Discord 卡片"：挂起节点恢复时会整体重跑并再次调到这里，
+        若不以"是否新插入"为准，人会在每次唤醒后再收到一张同样的卡片。
+        """
+        async with new_session() as session:
+            stmt = pg_insert(PendingApprovalORM).values(
+                approval_id=approval.approval_id,
+                run_id=approval.run_id,
+                wait_key=approval.wait_key,
+                decision_type=approval.decision_type.value,
+                node_name=approval.node_name,
+                thread_id=approval.thread_id,
+                context_summary=approval.context_summary,
+                context_ref=approval.context_ref,
+                blocking=approval.blocking,
+                status=approval.status.value,
+                created_at=approval.created_at,
+                resolved_at=approval.resolved_at,
+            )
+            stmt = stmt.on_conflict_do_nothing(index_elements=["wait_key"])
+            result = await session.execute(stmt)
+            await session.commit()
+            return bool(result.rowcount)  # type: ignore[attr-defined]
+
+    async def get(self, approval_id: str) -> PendingApproval | None:
+        async with new_session() as session:
+            row = (
+                await session.execute(
+                    select(PendingApprovalORM).where(PendingApprovalORM.approval_id == approval_id)
+                )
+            ).scalar_one_or_none()
+            return _orm_to_pending_approval(row) if row else None
+
+    async def list_by_status(
+        self, status: ApprovalStatus | None = None, *, run_id: str | None = None
+    ) -> list[PendingApproval]:
+        """工作台主查询（`GET /api/approvals?status=pending`），按创建时间倒序。
+
+        `status=None` 表示不过滤——审计场景需要看到已处理的卡片。
+        """
+        async with new_session() as session:
+            query = select(PendingApprovalORM)
+            if status is not None:
+                query = query.where(PendingApprovalORM.status == status.value)
+            if run_id is not None:
+                query = query.where(PendingApprovalORM.run_id == run_id)
+            rows = (
+                await session.execute(query.order_by(desc(PendingApprovalORM.created_at)))
+            ).scalars()
+            return [_orm_to_pending_approval(r) for r in rows]
+
+    async def find_pending_by_node(self, run_id: str, node_name: str) -> PendingApproval | None:
+        """某次运行某个节点上最新的一张 pending 卡片（HMAC 回调端点按路径参数定位卡片用）。"""
+        async with new_session() as session:
+            row = (
+                await session.execute(
+                    select(PendingApprovalORM)
+                    .where(
+                        PendingApprovalORM.run_id == run_id,
+                        PendingApprovalORM.node_name == node_name,
+                        PendingApprovalORM.status == ApprovalStatus.PENDING.value,
+                    )
+                    .order_by(desc(PendingApprovalORM.created_at))
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            return _orm_to_pending_approval(row) if row else None
+
+    async def mark_resolved(self, approval_id: str) -> bool:
+        """pending → resolved，`WHERE status='pending'` 使其幂等，返回是否真的改动了一行。"""
+        async with new_session() as session:
+            result = await session.execute(
+                update(PendingApprovalORM)
+                .where(
+                    PendingApprovalORM.approval_id == approval_id,
+                    PendingApprovalORM.status == ApprovalStatus.PENDING.value,
+                )
+                .values(status=ApprovalStatus.RESOLVED.value, resolved_at=datetime.now(UTC))
+            )
+            await session.commit()
+            return result.rowcount > 0  # type: ignore[attr-defined,no-any-return]
+
+
+def _orm_to_pending_approval(row: PendingApprovalORM) -> PendingApproval:
+    return PendingApproval(
+        approval_id=row.approval_id,
+        run_id=row.run_id,
+        wait_key=row.wait_key,
+        decision_type=ApprovalDecisionType(row.decision_type),
+        context_summary=row.context_summary,
+        context_ref=dict(row.context_ref or {}),
+        node_name=row.node_name,
+        thread_id=row.thread_id,
+        blocking=row.blocking,
+        status=ApprovalStatus(row.status),
+        created_at=row.created_at,
+        resolved_at=row.resolved_at,
+    )
+
+
+class ApprovalDecisionRepository:
+    """`approval_decisions` 表存取：人工决定的审计记录（一张卡片一条）。"""
+
+    async def save(self, decision: ApprovalDecision) -> bool:
+        """写入决定；该卡片已有决定时什么都不做并返回 False。
+
+        决策 API 以本方法的返回值作为"抢占决策权"的原子操作：并发的两个决定只有先到者
+        返回 True，后到者据此回 409，不会继续去唤醒图。
+        """
+        async with new_session() as session:
+            stmt = pg_insert(ApprovalDecisionORM).values(
+                approval_id=decision.approval_id,
+                decided_by=decision.decided_by,
+                outcome=decision.outcome,
+                note=decision.note,
+                decided_at=decision.decided_at,
+            )
+            stmt = stmt.on_conflict_do_nothing(index_elements=["approval_id"])
+            result = await session.execute(stmt)
+            await session.commit()
+            return bool(result.rowcount)  # type: ignore[attr-defined]
+
+    async def get_by_approval(self, approval_id: str) -> ApprovalDecision | None:
+        async with new_session() as session:
+            row = (
+                await session.execute(
+                    select(ApprovalDecisionORM).where(
+                        ApprovalDecisionORM.approval_id == approval_id
+                    )
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                return None
+            return ApprovalDecision(
+                approval_id=row.approval_id,
+                decided_by=row.decided_by,
+                outcome=row.outcome,
+                note=row.note,
+                decided_at=row.decided_at,
             )

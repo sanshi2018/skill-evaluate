@@ -55,6 +55,8 @@ from skill_evaluate.nodes.coverage.state import (
     KEY_TREE_NODE_COUNT,
     KEY_TREE_REVIEW_CONFIRMED,
 )
+from skill_evaluate.observability.discord_notifier import LoggingApprovalNotifier
+from skill_evaluate.persistence.approval_service import ApprovalService
 from skill_evaluate.state.capability import CapabilityNode, CapabilityTree
 from skill_evaluate.state.enums import (
     CapabilityTier,
@@ -211,6 +213,23 @@ class FakeApprovalRepo:
             }
         )
 
+class FakePendingApprovalRepo:
+    """docs/dev/22：`pending_approvals` 的内存替身（按 wait_key 去重，与库层唯一约束同口径）。"""
+
+    def __init__(self) -> None:
+        self.saved: dict[str, Any] = {}
+
+    async def save(self, approval: Any) -> bool:
+        if approval.wait_key in self.saved:
+            return False
+        self.saved[approval.wait_key] = approval
+        return True
+
+
+class FakeRunRepo:
+    async def get(self, run_id: str) -> Any:
+        return None
+
 
 class FakeReporter:
     def __init__(self) -> None:
@@ -309,6 +328,8 @@ def _pipeline(
         "capability_repo": FakeCapabilityRepo(tree),
         "judge_repo": FakeJudgeRepo(),
         "approval_repo": FakeApprovalRepo(),
+        "pending_repo": FakePendingApprovalRepo(),
+        "notifier": LoggingApprovalNotifier(),
         "reporter": FakeReporter(),
         "judge": FakeJudge(),
         "suite_service": suite_service or FakeSuiteService(),
@@ -323,6 +344,12 @@ def _pipeline(
         capability_repository=cast("Any", parts["capability_repo"]),
         judge_repository=cast("Any", parts["judge_repo"]),
         approval_repository=cast("Any", parts["approval_repo"]),
+        approval_service=ApprovalService(
+            ledger_repository=cast("Any", parts["approval_repo"]),
+            pending_repository=cast("Any", parts["pending_repo"]),
+            run_repository=FakeRunRepo(),
+            notifier=parts["notifier"],
+        ),
         coverage_settings=settings or CoverageSettings(),
     )
     return CoveragePipeline(deps), parts
@@ -460,7 +487,7 @@ async def test_能力树超阈值时先落审批待办再挂起(monkeypatch: pyt
         captured["wait_key"] = wait_key
         return "confirm"
 
-    monkeypatch.setattr("skill_evaluate.nodes.coverage.nodes.suspend_and_wait", fake_suspend)
+    monkeypatch.setattr("skill_evaluate.persistence.suspension.suspend_and_wait", fake_suspend)
     pipeline, parts = _pipeline(settings=CoverageSettings(capability_count_review_threshold=2))
 
     result = await pipeline.extract_capability_tree(_state())
@@ -469,7 +496,13 @@ async def test_能力树超阈值时先落审批待办再挂起(monkeypatch: pyt
     assert captured["wait_key"] == f"{RUN_ID}:{NODE_PREFIX}:tree_review"
     # 待办必须在挂起**之前**落库，否则审批工作台看不到这张卡片，也就没人能唤醒它。
     assert parts["approval_repo"].created[0]["wait_key"] == captured["wait_key"]
-    assert parts["approval_repo"].created[0]["thread_id"] == RUN_ID
+    # docs/dev/22：thread_id 与主图 checkpointer / Hermes Hook 同口径（skill_id:run_id）。
+    assert parts["approval_repo"].created[0]["thread_id"] == f"{SKILL_ID}:{RUN_ID}"
+    # 统一审批卡片：工作台据此展示，Discord 卡片只在首次插入时发送一次。
+    card = parts["pending_repo"].saved[captured["wait_key"]]
+    assert card.decision_type.value == "confirm_tree_review"
+    assert card.context_ref["capability_count"] == 3
+    assert len(parts["notifier"].sent) == 1
     assert result[KEY_TREE_REVIEW_CONFIRMED] is True
 
 
@@ -484,7 +517,7 @@ async def test_人工未明确确认时拒绝继续(monkeypatch: pytest.MonkeyPa
     async def fake_suspend(reason: str, wait_key: str) -> Any:
         return payload
 
-    monkeypatch.setattr("skill_evaluate.nodes.coverage.nodes.suspend_and_wait", fake_suspend)
+    monkeypatch.setattr("skill_evaluate.persistence.suspension.suspend_and_wait", fake_suspend)
     pipeline, _ = _pipeline(settings=CoverageSettings(capability_count_review_threshold=2))
 
     with pytest.raises(PipelineSuspended, match="人工未确认该拆解粒度"):
@@ -500,7 +533,7 @@ async def test_确认信号的几种形状都被接受(monkeypatch: pytest.Monke
     async def fake_suspend(reason: str, wait_key: str) -> Any:
         return payload
 
-    monkeypatch.setattr("skill_evaluate.nodes.coverage.nodes.suspend_and_wait", fake_suspend)
+    monkeypatch.setattr("skill_evaluate.persistence.suspension.suspend_and_wait", fake_suspend)
     pipeline, _ = _pipeline(settings=CoverageSettings(capability_count_review_threshold=2))
     result = await pipeline.extract_capability_tree(_state())
     assert result[KEY_TREE_REVIEW_CONFIRMED] is True

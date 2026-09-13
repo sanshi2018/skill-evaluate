@@ -195,7 +195,8 @@ patch = await OptimizationLoop().run(run_id, ctx, retest_fn, optimizer)
 - `is_agent_overfitting(result)` —— `代理过拟合(Agent Overfitting)：...`
 - `is_model_quirk_rejection(result)` —— `模型怪癖剥离(Model-Quirk Stripping)：...`
 
-两个已知限制（留给 `22` / 后续迭代）：
+两个已知限制（留给后续迭代；`22` 落地后**仍未处理**——它们与人工审批无关，门控打回后的闭环耗尽照常走
+`ACCEPT_PATCH` 审批卡片）：
 
 1. `OptimizationLoop` 目前**不把**上一轮的失败 `detail` 回灌给 Optimizer（`FailureContext` 每轮
    相同，见 `agents/optimizer/loop.py`）。门控打回确实会让闭环换一版补丁，但模型并不知道

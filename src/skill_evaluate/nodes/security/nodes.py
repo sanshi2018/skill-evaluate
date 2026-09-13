@@ -62,7 +62,7 @@ from skill_evaluate.agents.optimizer.loop import LoopResult
 from skill_evaluate.agents.optimizer.patch_applier import working_version_ref
 from skill_evaluate.agents.optimizer.schema import ROLE_APPSEC_EXPERT
 from skill_evaluate.agents.optimizer.service import build_failure_context
-from skill_evaluate.errors import PersistenceError, PipelineSuspended
+from skill_evaluate.errors import HumanRejectedSuspension, PersistenceError, PipelineSuspended
 from skill_evaluate.executors.base import ExecutionRequest
 from skill_evaluate.logging import get_logger
 from skill_evaluate.nodes.security import detectors, rules
@@ -878,7 +878,9 @@ class SecurityPipeline:
             # 闭环耗尽重试后已经挂起过一次；走到这里意味着人工明确选择了"放弃该补丁"。
             # 拿旧正文继续跑收尾节点等于假装无事发生，而这里的"事"是一个已经被证明
             # 可复现的安全漏洞——直接判该 Skill 本维度失败。
-            raise PipelineSuspended(
+            # docs/dev/22：人已在 ACCEPT_PATCH 卡片上选了放弃——用 HumanRejectedSuspension 让
+            # nodes/approval_guard.py 原样放行，而不是再发一张"要不要放弃"的卡片。
+            raise HumanRejectedSuspension(
                 f"{NODE_NAMES['appsec_optimizer_loop']}：AppSec 优化闭环超出最大重试次数"
                 f"且人工未采纳补丁，run_id={run_id}，"
                 f"未修复的安全发现={[f.finding_id for f in train_findings]}"

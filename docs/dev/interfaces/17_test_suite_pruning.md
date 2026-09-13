@@ -185,6 +185,11 @@ await repo.update_status(sug.suggestion_id, SuggestionStatus.CONFIRMED)  # 人�
 
 ### 5.2 ⚠️ 真正的淘汰动作属于 `22`，不属于本模块
 
+> ✅ **`22` 已实现**：`POST /api/suggestions/{id}/decide`（`confirmed` / `rejected`）。确认后执行
+> `TestCaseRepository.retire(case_id)`：`split → COLD`（**归档不删除**，仍留在
+> `test_suite_versions.case_ids` 里保证历史可复现）。仓储追加 `get(suggestion_id)`；确认动作按
+> `SuggestionType` 显式分派，新类型未登记时 501。评测流水线里仍然没有任何自动淘汰路径。
+
 架构文档模块七"应对方案"原文：*瘦身节点默认只做"降级运行"或"建议剔除"，硬性的
 删除操作必须在内部审核工作台上，保留人类开发者的最终 Review 确认权限。*
 

@@ -49,7 +49,7 @@ from skill_evaluate.agents.analyzer.identity import (
     parse_capability_tree_id,
 )
 from skill_evaluate.agents.generator.schema import CapabilityFocus
-from skill_evaluate.errors import GenerationError, PersistenceError, PipelineSuspended
+from skill_evaluate.errors import GenerationError, HumanRejectedSuspension, PersistenceError
 from skill_evaluate.logging import get_logger
 from skill_evaluate.nodes.coverage import rules
 from skill_evaluate.nodes.coverage.deps import TRIGGERED_BY_COVERAGE_GAP, CoverageDeps
@@ -67,7 +67,7 @@ from skill_evaluate.nodes.coverage.state import (
     BlindSpot,
     CoverageState,
 )
-from skill_evaluate.persistence.suspension import suspend_and_wait
+from skill_evaluate.state.approval import OUTCOME_CONFIRM, ApprovalDecisionType
 from skill_evaluate.state.capability import CapabilityTree
 from skill_evaluate.state.enums import JudgeVerdictStatus, TestCaseCategory
 from skill_evaluate.state.skill import SkillDefinition
@@ -98,7 +98,7 @@ SUBJECT_PREFIX_COVERAGE = "coverage:"
 
 # 人工审核卡片的 resume payload 里被认作"确认继续"的取值（docs/dev/16 第 4 节）。
 # 形状约定尽量宽容，留给 docs/dev/22 的审批工作台；解析逻辑见 `_is_tree_confirmed()`。
-RESUME_CONFIRM = "confirm"
+RESUME_CONFIRM = OUTCOME_CONFIRM  # docs/dev/22 起与 state/approval.py 的 outcome 常量同源
 
 
 class CoveragePipeline:
@@ -146,7 +146,7 @@ class CoveragePipeline:
 
         threshold = self.deps.settings().capability_count_review_threshold
         if len(tree.nodes) > threshold:
-            await self._suspend_for_tree_review(run_id, tree, threshold)
+            await self._suspend_for_tree_review(run_id, str(state["skill_id"]), tree, threshold)
             updates[KEY_TREE_REVIEW_CONFIRMED] = True
 
         logger.info(
@@ -161,13 +161,13 @@ class CoveragePipeline:
         return updates
 
     async def _suspend_for_tree_review(
-        self, run_id: str, tree: CapabilityTree, threshold: int
+        self, run_id: str, skill_id: str, tree: CapabilityTree, threshold: int
     ) -> None:
-        """能力树规模超阈值的人工审核卡片。
+        """能力树规模超阈值的人工审核卡片（docs/dev/22 `CONFIRM_TREE_REVIEW`）。
 
-        与 `OptimizationLoop._suspend()` 同一套写法：先在 `human_approvals` 落一条
-        待办（docs/dev/22 的审批工作台按 `wait_key` 找到它），再调
-        `suspend_and_wait()` 交出控制权。
+        与 `OptimizationLoop._suspend()` 同一套写法：经 `ApprovalService` 落账本 + 工作台
+        卡片 + Discord 通知，再挂起交出控制权。`thread_id` 按 `f"{skill_id}:{run_id}"`
+        解析（docs/dev/16 当初写的 `thread_id = run_id` 与主图 checkpointer 口径不一致）。
 
         **默认不通过**（`_is_tree_confirmed()` 只认明确的确认信号）：一棵没被明确
         确认过的树若被当成确认过的继续算下去，得到的是一份看起来正常、实际建立在
@@ -176,14 +176,6 @@ class CoveragePipeline:
         """
         node_name = NODE_NAMES["extract_capability_tree"]
         wait_key = f"{run_id}:{NODE_PREFIX}:tree_review"
-        await self.deps.approval_repository.create(
-            run_id=run_id,
-            node_name=node_name,
-            # thread_id 沿用 run_id：主图以 run_id 作 LangGraph thread_id
-            # （docs/dev/04），审批工作台唤醒时要拿它去 `Command(resume=...)`。
-            thread_id=run_id,
-            wait_key=wait_key,
-        )
         logger.warning(
             "coverage_capability_tree_size_exceeded",
             run_id=run_id,
@@ -194,12 +186,32 @@ class CoveragePipeline:
             wait_key=wait_key,
         )
 
-        decision: Any = await suspend_and_wait(
-            reason=f"capability_tree_size_exceeds_threshold:{len(tree.nodes)}",
+        preview = "；".join(node.description for node in tree.nodes[:10])
+        decision: Any = await self.deps.approvals().request_human_approval(
+            run_id=run_id,
             wait_key=wait_key,
+            decision_type=ApprovalDecisionType.CONFIRM_TREE_REVIEW,
+            context_summary=(
+                f"Skill `{tree.skill_id}` 拆出 {len(tree.nodes)} 项声明能力，超过审核阈值 "
+                f"{threshold}。请确认是否把执行步骤误拆成了能力（confirm 继续映射计算 / "
+                f"reject 停止本维度）。前 10 项：{preview}"
+            ),
+            # 工作台据此读 capability_trees；逐条 evidence_quote 在日志事件
+            # `analyzer_capability_extracted` 里（docs/dev/interfaces/16 第 5 节）。
+            context_ref={
+                "skill_id": tree.skill_id,
+                "skill_version_ref": tree.skill_version_ref,
+                "capability_count": len(tree.nodes),
+                "threshold": threshold,
+            },
+            node_name=node_name,
+            skill_id=skill_id,
+            reason=f"capability_tree_size_exceeds_threshold:{len(tree.nodes)}",
         )
         if not _is_tree_confirmed(decision):
-            raise PipelineSuspended(
+            # HumanRejectedSuspension（PipelineSuspended 子类）：人已经明确说过"不"，
+            # nodes/approval_guard.py 不会再为此发一张 ABANDON_RUN 卡片。
+            raise HumanRejectedSuspension(
                 f"{node_name}：能力树含 {len(tree.nodes)} 项能力（阈值 {threshold}），"
                 f"人工未确认该拆解粒度，run_id={run_id}。"
                 "继续按这棵树计算覆盖率会得到一份永远补不满的盲区清单，因此就此停下。"

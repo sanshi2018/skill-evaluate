@@ -138,6 +138,9 @@ builder = StateGraph(MainGraphState)
 
 ### 3.2 `interrupt_before` 汇总
 
+> **docs/dev/22 落地后**：人工放弃补丁后抛 `HumanRejectedSuspension`；ROI 共识未达成抛的普通
+> `PipelineSuspended` 由节点级 guard 接成 `ABANDON_RUN` 阻塞审批（retry / abandon），见 `interfaces/22` 第 1 节。
+
 ```python
 from skill_evaluate.nodes.instruction_control import INTERRUPT_BEFORE_NODES
 ```

@@ -98,6 +98,12 @@ def build_main_graph() -> CompiledGraph:
     )
 ```
 
+> ⚠️ 文档 22 实现后的修正：各维度节点请经 `skill_evaluate.nodes.approval_guard.ApprovalGuardedBuilder(builder)`
+> 添加（Judge 冻结 / 连续坍塌 / 共识未达成才会变成审批卡片而不是让整条流水线直接抛异常）；
+> `MULTI_SKILL_TERMINAL` 取 `skill_evaluate.nodes.multi_skill.TERMINAL_NODE`（现为 `multi_skill.deep_conflict_approval_gate`），
+> 主图 schema 并入其两个新私有键；编译后 `register_graph_resumer(...)`，CLI `run` 入口调用
+> `configure_notification_channels()`。详见 `docs/dev/interfaces/22_human_approval_workbench.md` 第 2 节。
+
 **并行汇聚（LangGraph fan-in）说明**：Phase A 四个节点、Phase B 三个节点分别通过 LangGraph 的多前驱边自然并行执行，`finalize.report` 作为汇聚点等待其全部前驱（各维度的 `finalize_dimension_report` 终节点）完成——LangGraph 原生支持这种 DAG 汇聚语义，本文档不需要手写额外的同步屏障。
 
 ## 3. `interrupt_before` 编译期列表汇总
@@ -110,6 +116,8 @@ INTERRUPT_BEFORE_NODES = [
     "capability_coverage.extract_capability_tree",
 ]
 ```
+
+> ⚠️ 文档 22 实现后：审批闸门与节点级 guard 全部是动态 `interrupt()`，不要加入本列表；模块六的节点名实际为 `coverage.extract_capability_tree`（`nodes.coverage.graph.INTERRUPT_BEFORE_NODES`）。
 
 **注意**：这份列表只覆盖**编译期静态已知**会挂起的节点入口；文档 04 第 5 节强调的"外部事件唤醒"（Hermes Hook 回调、审批 API 回调）走的是**动态** `interrupt()`（运行时按需触发,不需要节点名预先出现在这份静态列表里）。两种机制在文档 04 已并存设计，本文档只需正确汇总静态列表，动态挂起点（如每次 `ExecutorBackend.execute()` 内部等待 Hermes 回调）不在此处重复声明。
 
@@ -233,7 +241,7 @@ jobs:
 - [ ] `golden_fingerprint.json`（文档21）若本次发布更新了基础镜像/依赖版本，已同步更新并经人工确认
 - [ ] `judge_health_status`（文档08）在预发布环境的黄金基准通过率符合预期，避免带着已冻结的 Judge 配置上线
 - [ ] `LlamaControlBackend`（文档19）等外部依赖服务的可用性已确认（`health_check()` 通过）
-- [ ] CI Secrets（Hermes Hook Secret、Langfuse Key、Discord Webhook、LLM API Key）已在目标环境正确配置，且旧 Secret 的轮换不影响正在进行中的评测运行（`pending_hooks` 中 `waiting` 状态的记录使用发起请求时的 Secret 版本校验，需确认签名校验逻辑对新旧 Secret 轮换窗口的处理——若无重叠容忍期，建议发布窗口选在无进行中评测运行时）
+- [ ] CI Secrets（Hermes Hook Secret、Langfuse Key、Discord Webhook（`SKILLEVAL_APPROVAL_DISCORD_WEBHOOK_URL`，文档 22）、审批 HMAC Secret（`SKILLEVAL_APPROVAL_HMAC_SECRET`）、LLM API Key）已在目标环境正确配置，且旧 Secret 的轮换不影响正在进行中的评测运行（`pending_hooks` 中 `waiting` 状态的记录使用发起请求时的 Secret 版本校验，需确认签名校验逻辑对新旧 Secret 轮换窗口的处理——若无重叠容忍期，建议发布窗口选在无进行中评测运行时）
 - [ ] 回滚方案：数据库迁移保持向后兼容（新版本代码可以跑在旧一版本 schema 上，至少保证紧邻的一次回滚不需要额外的降级迁移脚本）
 
 ## 8. 全项目文档系列回顾

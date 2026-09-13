@@ -2,7 +2,7 @@
 
 两种用法，同一份边定义（与其余维度的 `graph.py` 对称）：
 
-- `add_multi_skill_nodes(builder, deps)`——把八个节点**平铺**进主图，供 docs/dev/24 使用；
+- `add_multi_skill_nodes(builder, deps)`——把九个节点**平铺**进主图，供 docs/dev/24 使用；
 - `build_multi_skill_subgraph(deps)`——单独编出一张只含本维度的图，供本地调试与集成测试。
 
 ## 并行扇出 + 汇合
@@ -17,8 +17,9 @@
 沙箱消耗与前面三条支路叠加会让峰值并发翻倍；串在后面，共享信号量的排队更可预期。
 
 `INTERRUPT_BEFORE_NODES` 为空：本维度不产生补丁、不进闭环。基石熔断的"阻断"通过
-`dimension_results.blocking=True` 表达，是否挂起等待人工由 docs/dev/22 依据告警 payload
-的 `blocking` 决定，不在本子图里静态挂起。
+`dimension_results.blocking=True` 表达；docs/dev/22 追加的终点节点
+`deep_conflict_approval_gate` 依据告警 payload 的 `blocking` 走**动态** `interrupt()`
+（只在基石熔断时挂起），因此同样不进静态列表——静态中断会让每次运行都停在闸门前。
 """
 
 from __future__ import annotations
@@ -68,9 +69,13 @@ def add_multi_skill_nodes(
         pipeline.role_collision_and_temporal_static_scan,
     )
     builder.add_node(NODE_NAMES["core_skill_regression_gate"], pipeline.core_skill_regression_gate)
-    builder.add_node(TERMINAL_NODE, pipeline.finalize_dimension_report)
+    builder.add_node(NODE_NAMES["finalize_dimension_report"], pipeline.finalize_dimension_report)
+    builder.add_node(TERMINAL_NODE, pipeline.deep_conflict_approval_gate)
 
     builder.add_edge(ENTRY_NODE, NODE_NAMES["namespace_pollution_static_scan"])
+
+
+
     for probe_node in PROBE_NODES:
         builder.add_edge(NODE_NAMES["namespace_pollution_static_scan"], probe_node)
     builder.add_edge(list(PROBE_NODES), NODE_NAMES["role_collision_and_temporal_static_scan"])
@@ -78,7 +83,11 @@ def add_multi_skill_nodes(
         NODE_NAMES["role_collision_and_temporal_static_scan"],
         NODE_NAMES["core_skill_regression_gate"],
     )
-    builder.add_edge(NODE_NAMES["core_skill_regression_gate"], TERMINAL_NODE)
+    builder.add_edge(
+        NODE_NAMES["core_skill_regression_gate"], NODE_NAMES["finalize_dimension_report"]
+    )
+    # docs/dev/22：收尾之后过人工介入闸门（阻塞挂起或仅通知，见节点文档）。
+    builder.add_edge(NODE_NAMES["finalize_dimension_report"], TERMINAL_NODE)
     return pipeline
 
 

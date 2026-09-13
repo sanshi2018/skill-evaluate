@@ -21,6 +21,12 @@ def register_graph_resumer(resumer: GraphResumer) -> None: ...
 尚未 `register_graph_resumer()`，直接抛 `ConfigurationError`（不会静默失败，
 Hook 端点会因此返回 500，明确暴露"主图还没接好"这一事实，而不是悄悄丢弃唤醒）。
 
+> **docs/dev/22 落地后**：人工审批决策 API（`POST /api/approvals/{id}/decide`）会在写任何状态
+> **之前**先调 `is_graph_resumer_registered()`，未注册时对阻塞卡片返回 **503**——因为
+> `resolve_suspension()` 先迁账本再调 resumer，抛错那一刻账本已改，卡片就再也唤醒不了。
+> 注册仍是 `24` 的职责；挂起点统一的 thread_id 口径为 `f"{skill_id}:{run_id}"`，
+> `CompiledGraphResumer` 直接使用传入的 `thread_id` 即可。
+
 ## 接入方式
 
 在 `docs/dev/24` 完成 `graph = builder.compile(checkpointer=checkpointer,

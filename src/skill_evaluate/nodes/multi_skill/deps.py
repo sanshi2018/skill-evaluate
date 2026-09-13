@@ -26,6 +26,7 @@ from skill_evaluate.executors.routing import resolve_backend_type
 from skill_evaluate.nodes.multi_skill.state import ROUTING_KEY
 from skill_evaluate.observability.alerts import AlertDispatcher, get_alert_dispatcher
 from skill_evaluate.observability.report_generator import ReportGenerator
+from skill_evaluate.persistence.approval_service import ApprovalService, get_approval_service
 from skill_evaluate.persistence.repository import (
     CapabilityRepository,
     JudgeRepository,
@@ -58,6 +59,8 @@ class MultiSkillDeps:
     test_suite_service: TestSuiteService | None = None
     report_generator: ReportGenerator | None = None
     alert_dispatcher: AlertDispatcher | None = None
+    # docs/dev/22：深度冲突审批闸门用。None = 取进程级默认 ApprovalService（同 alerts() 的理由）。
+    approval_service: ApprovalService | None = None
     skill_repository: SkillRepository = field(default_factory=SkillRepository)
     test_case_repository: TestCaseRepository = field(default_factory=TestCaseRepository)
     test_suite_repository: TestSuiteRepository = field(default_factory=TestSuiteRepository)
@@ -103,6 +106,10 @@ class MultiSkillDeps:
         之后才注册；缓存住就会一直用那个只写日志的默认实现。
         """
         return self.alert_dispatcher or get_alert_dispatcher()
+
+    def approvals(self) -> ApprovalService:
+        """统一审批入口（docs/dev/22）。未注入时每次回落到进程级默认服务，不缓存。"""
+        return self.approval_service or get_approval_service()
 
     def settings(self) -> MultiSkillSettings:
         if self.multi_skill_settings is None:

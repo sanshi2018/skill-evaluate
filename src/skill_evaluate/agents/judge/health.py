@@ -27,11 +27,23 @@ from skill_evaluate.agents.llm import model_supports_sampling
 from skill_evaluate.config import get_settings
 from skill_evaluate.errors import JudgeFrozenError
 from skill_evaluate.logging import get_logger
+from skill_evaluate.observability.alerts import (
+    AlertDispatcher,
+    dispatch_alert,
+    get_alert_dispatcher,
+)
 from skill_evaluate.persistence.repository import JudgeHealthRepository, JudgeMissRepository
 from skill_evaluate.state.enums import JudgeVerdictStatus
 from skill_evaluate.state.golden import GoldenCase, JudgeMissRecord
 
 logger = get_logger(component="judge_health")
+
+# docs/dev/22：冻结告警的机器可读类型（Discord 卡片按它选模板）。
+ALERT_TYPE_JUDGE_FROZEN = "judge_frozen"
+# 冻结是**平台级**事件，不隶属于某一次流水线运行（它发生在黄金注入之后的健康检查里，
+# 被冻结的配置会影响之后所有 run）。告警协议要求 run_id 是字符串，这里用固定的关联键，
+# 卡片渲染时据此显示"平台级"而不是一个看起来像 run_id 的假值。
+JUDGE_HEALTH_ALERT_RUN_ID = "platform:judge_health"
 
 
 def temperature_bucket(model: str, temperature: float) -> str:
@@ -73,8 +85,11 @@ class JudgeHealthMonitor:
         health_repository: JudgeHealthRepository | None = None,
         miss_rate_threshold: float | None = None,
         window_size: int | None = None,
+        alert_dispatcher: AlertDispatcher | None = None,
     ) -> None:
         settings = get_settings().judge
+        # None = 每次发告警时回落到**当前**注册的通道（docs/dev/22 在应用启动时才注册 Discord）。
+        self._alert_dispatcher = alert_dispatcher
         self._miss_repo = miss_repository or JudgeMissRepository()
         self._health_repo = health_repository or JudgeHealthRepository()
         self._threshold = (
@@ -172,6 +187,25 @@ class JudgeHealthMonitor:
                 threshold=self._threshold,
                 action="该 Judge 配置的评测权限已冻结，需人工调整 Prompt/更换模型后解冻",
             )
+            # docs/dev/22：把同一事件推到告警通道（Discord）。结构化日志保留作审计旁路。
+            # 这里只"通知"，不挂起：此刻可能不在任何图节点上下文里。真正让流水线停下等人
+            # 解冻的，是下一次 judgmental_verdict() 抛出的 JudgeFrozenError 被
+            # nodes/approval_guard.py 接住后发起的 UNFREEZE_JUDGE 审批。
+            await dispatch_alert(
+                self._alert_dispatcher or get_alert_dispatcher(),
+                alert_type=ALERT_TYPE_JUDGE_FROZEN,
+                run_id=JUDGE_HEALTH_ALERT_RUN_ID,
+                payload={
+                    "model": model,
+                    "temperature": temperature,
+                    "temperature_bucket": bucket,
+                    "miss_rate": miss_rate,
+                    "miss_count": miss_count,
+                    "window_size": len(window),
+                    "threshold": self._threshold,
+                    "action_required": "调整 Judge Prompt 或更换模型后，在审查工作台解冻",
+                },
+            )
 
         return JudgeHealth(
             model=model,
@@ -191,7 +225,10 @@ class JudgeHealthMonitor:
             raise JudgeFrozenError(
                 f"Judge 配置已冻结（model={model!r}, temperature_bucket={bucket!r}）："
                 f"{status['reason'] or '失误率超阈值'}。"
-                "请人工调整 Prompt 或更换模型后，经审批工作台（docs/dev/22）解冻。"
+                "请人工调整 Prompt 或更换模型后，经审批工作台（docs/dev/22）解冻。",
+                # 带上结构化定位信息：审批卡片的"解冻"操作要用它们调 unfreeze()。
+                model=model,
+                temperature=temperature,
             )
 
     async def unfreeze(self, *, model: str, temperature: float, operator: str) -> None:
@@ -230,6 +267,8 @@ async def check_judge_health(window_size: int = 50) -> bool:
 
 
 __all__ = [
+    "ALERT_TYPE_JUDGE_FROZEN",
+    "JUDGE_HEALTH_ALERT_RUN_ID",
     "JudgeHealth",
     "JudgeHealthMonitor",
     "check_judge_health",

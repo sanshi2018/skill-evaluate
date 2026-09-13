@@ -53,11 +53,17 @@ from pydantic import BaseModel, Field
 
 from skill_evaluate.agents.analyzer.ablation_lexicon import LexiconKind, scan_lexicon
 from skill_evaluate.agents.judge.golden_injector import is_golden_subject
-from skill_evaluate.errors import GenerationError, PersistenceError, PipelineSuspended
+from skill_evaluate.errors import (
+    GenerationError,
+    HumanRejectedSuspension,
+    PersistenceError,
+    PipelineSuspended,
+)
 from skill_evaluate.executors.base import ExecutionRequest
 from skill_evaluate.executors.comparison import is_conclusive_trace
 from skill_evaluate.executors.skill_attribution import attribute_skill_loads
 from skill_evaluate.logging import get_logger
+from skill_evaluate.nodes.approval_guard import resume_decision
 from skill_evaluate.nodes.instruction_control.trace_digest import (
     format_actions_for_review,
     format_final_response,
@@ -80,6 +86,8 @@ from skill_evaluate.nodes.multi_skill.state import (
     KEY_CONTEXT_NOTES,
     KEY_CORE_REGRESSION_OUTCOME,
     KEY_CORE_SKILL_REFS,
+    KEY_DEEP_CONFLICT_ALERT,
+    KEY_DEEP_CONFLICT_RESOLUTION,
     KEY_HIJACK_OUTCOME,
     KEY_NAMESPACE_OUTCOME,
     KEY_NOISE_PACK_REFS,
@@ -90,6 +98,7 @@ from skill_evaluate.nodes.multi_skill.state import (
     MultiSkillState,
 )
 from skill_evaluate.observability.alerts import dispatch_alert
+from skill_evaluate.state.approval import OUTCOME_ACKNOWLEDGE, ApprovalDecisionType
 from skill_evaluate.state.capability import NegativeConstraint
 from skill_evaluate.state.enums import DatasetSplit, JudgeVerdictStatus, TestCaseCategory
 from skill_evaluate.state.judge import ConsensusResult, JudgeVerdict
@@ -124,10 +133,14 @@ NODE_NAMES = {
     ),
     "core_skill_regression_gate": f"{NODE_PREFIX}.core_skill_regression_gate",
     "finalize_dimension_report": f"{NODE_PREFIX}.finalize_dimension_report",
+    # docs/dev/22 追加：深度冲突的人工介入闸门（阻塞挂起 / 仅通知）。
+    "deep_conflict_approval_gate": f"{NODE_PREFIX}.deep_conflict_approval_gate",
 }
 
 ENTRY_NODE = NODE_NAMES["prepare_multi_skill_context"]
-TERMINAL_NODE = NODE_NAMES["finalize_dimension_report"]
+# docs/dev/22 起终点是审批闸门而不是收尾节点：挂起点放在独立节点里，恢复时整体重跑的只是
+# 这个轻量节点，而不是会重写 dimension_results、重发告警的收尾节点（interfaces/20 第 4.3 节）。
+TERMINAL_NODE = NODE_NAMES["deep_conflict_approval_gate"]
 # 三条并行动态探测支路（主图装配时 fan-out / fan-in 用）。
 PROBE_NODES: tuple[str, ...] = (
     NODE_NAMES["cross_trigger_interference_probe"],
@@ -194,7 +207,7 @@ def _eligible(case: TestCase) -> bool:
 
 
 class MultiSkillPipeline:
-    """模块十的八个节点。做成类是为了让依赖注入只发生一次（构造时）。"""
+    """模块十的九个节点（docs/dev/22 追加审批闸门）。做成类是为了让依赖注入只发生一次（构造时）。"""
 
     def __init__(self, deps: MultiSkillDeps | None = None) -> None:
         self.deps = deps or MultiSkillDeps()
@@ -1075,37 +1088,116 @@ class MultiSkillPipeline:
         )
 
         alert_sent = False
+        alert_payload: dict[str, object] | None = None
         if hard or len(soft) >= settings.deep_conflict_alert_threshold:
+            alert_payload = {
+                "dimension": DIMENSION,
+                "skill_id": str(state["skill_id"]),
+                "skill_version_ref": str(state["skill_version_ref"]),
+                "blocking": blocking,
+                "hard_findings": hard,
+                "soft_findings": soft,
+                "noise_pack": [
+                    ref["skill_id"]
+                    for ref in cast("list[dict[str, str]]", state.get(KEY_NOISE_PACK_REFS) or [])
+                ],
+            }
             alert_sent = await dispatch_alert(
                 self.deps.alerts(),
                 alert_type=ALERT_TYPE_DEEP_CONFLICT,
                 run_id=run_id,
-                payload={
-                    "dimension": DIMENSION,
-                    "skill_id": str(state["skill_id"]),
-                    "skill_version_ref": str(state["skill_version_ref"]),
-                    "blocking": blocking,
-                    "hard_findings": hard,
-                    "soft_findings": soft,
-                    "noise_pack": [
-                        ref["skill_id"]
-                        for ref in cast(
-                            "list[dict[str, str]]", state.get(KEY_NOISE_PACK_REFS) or []
-                        )
-                    ],
-                },
+                payload=alert_payload,
             )
         logger.info(
             "multi_skill_dimension_recorded",
             run_id=run_id,
-            node_name=TERMINAL_NODE,
+            node_name=NODE_NAMES["finalize_dimension_report"],
             status=status.value,
             blocking=blocking,
             hard=len(hard),
             soft=len(soft),
             alert_sent=alert_sent,
         )
-        return {KEY_ALERT_DISPATCHED: alert_sent}
+        return {KEY_ALERT_DISPATCHED: alert_sent, KEY_DEEP_CONFLICT_ALERT: alert_payload}
+
+    # ------------------------------------------------------------------ #
+    # 9. deep_conflict_approval_gate（docs/dev/22 第 8.1 节）
+    # ------------------------------------------------------------------ #
+
+    async def deep_conflict_approval_gate(self, state: MultiSkillState) -> dict[str, object]:
+        """深度冲突的人工介入闸门：按告警 payload 的 `blocking` 分流（docs/dev/22 第 8.1 节）。
+
+        | 情形 | 处理 |
+        |---|---|
+        | 未达告警条件 | 直接放行 |
+        | `blocking=True`（基石熔断） | `RESOLVE_DEEP_CONFLICT` 阻塞审批：acknowledge 放行 / 否则停下 |
+        | `blocking=False`（仅软性冲突达阈值） | 写一张非阻塞卡片 + 通知，**不挂起** |
+
+        分流依据是项目级通用模式："不等人工确认能否继续产出有意义的结果"。基石熔断意味着
+        合入本 Skill 会让既有核心 Skill 变差，后续维度继续跑出的分数没有合并意义；软性冲突
+        需要人判断是干扰包还是被测 Skill 的问题，但不影响其余维度的结论。
+
+        放行不改变维度结论：dimension_results 仍是 FAIL/blocking=True，人工的 acknowledge
+        只表示"我已看过、允许流水线跑完出报告"，合并与否仍由报告的阻断项决定。
+        """
+        payload = cast("dict[str, object] | None", state.get(KEY_DEEP_CONFLICT_ALERT))
+        if not payload:
+            return {KEY_DEEP_CONFLICT_RESOLUTION: None}
+
+        run_id = str(state["run_id"])
+        skill_id = str(state["skill_id"])
+        node_name = TERMINAL_NODE
+        hard = cast("list[str]", payload.get("hard_findings") or [])
+        soft = cast("list[str]", payload.get("soft_findings") or [])
+        summary = (
+            f"Skill `{skill_id}` 在多技能并发加载下出现深度冲突："
+            f"阻断项 {len(hard)} 条、软性冲突 {len(soft)} 条。"
+            + (
+                f"阻断项：{'；'.join(hard)[:1500]}"
+                if hard
+                else f"软性冲突：{'；'.join(soft)[:1500]}"
+            )
+        )
+        # 工作台据此按 interfaces/20 第 4.4 节的号段表取"单跑 vs 并发"双路 Trace 比对。
+        context_ref: dict[str, object] = {
+            **payload,
+            "case_ids": cast("list[str]", state.get(KEY_CASE_IDS) or []),
+        }
+        wait_key = f"{run_id}:{NODE_PREFIX}:deep_conflict"
+
+        if not payload.get("blocking"):
+            await self.deps.approvals().notify_human(
+                run_id=run_id,
+                wait_key=wait_key,
+                decision_type=ApprovalDecisionType.RESOLVE_DEEP_CONFLICT,
+                context_summary=summary,
+                context_ref=context_ref,
+                node_name=node_name,
+                skill_id=skill_id,
+            )
+            return {KEY_DEEP_CONFLICT_RESOLUTION: "notified"}
+
+        decision = await self.deps.approvals().request_human_approval(
+            run_id=run_id,
+            wait_key=wait_key,
+            decision_type=ApprovalDecisionType.RESOLVE_DEEP_CONFLICT,
+            context_summary=summary
+            + "。请比对单跑与并发 Trace 后选择 acknowledge（记录裁定、流水线继续出报告）或 abandon。",
+            context_ref=context_ref,
+            node_name=node_name,
+            skill_id=skill_id,
+        )
+        if resume_decision(decision) != OUTCOME_ACKNOWLEDGE:
+            raise HumanRejectedSuspension(
+                f"{node_name}：基石回归熔断的深度冲突未获人工放行，run_id={run_id}。"
+            )
+        logger.warning(
+            "multi_skill_deep_conflict_acknowledged",
+            run_id=run_id,
+            node_name=node_name,
+            hard=len(hard),
+        )
+        return {KEY_DEEP_CONFLICT_RESOLUTION: OUTCOME_ACKNOWLEDGE}
 
     # ------------------------------------------------------------------ #
     # 内部工具

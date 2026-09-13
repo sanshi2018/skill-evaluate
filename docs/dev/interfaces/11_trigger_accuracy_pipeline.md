@@ -122,6 +122,9 @@ INTERRUPT_BEFORE_NODES_ALL = [*INTERRUPT_BEFORE_NODES, "security.appsec_optimize
 `interrupt()`（超出重试次数才挂起），不加进静态列表也能正常挂起；列出来是为了让
 "这个节点可能停在人工审批上"在编译期就是显式的。
 
+> **docs/dev/22 落地后**：人工放弃补丁后本维度抛 `HumanRejectedSuspension`（`PipelineSuspended` 子类，
+> 既有 `except` 不受影响）；主图用 `ApprovalGuardedBuilder` 装配时，guard 据此不再追问。
+
 ### 3.2 staleness 告警透传给报告
 
 ```python
