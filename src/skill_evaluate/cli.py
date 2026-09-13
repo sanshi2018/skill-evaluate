@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import Annotated
 
 import typer
 from alembic import command as alembic_command
@@ -254,6 +255,102 @@ def sync_toolbox() -> None:
             f"已同步到 {toolbox.root}（commit={toolbox.commit_sha()}，"
             f"{len(toolbox.manifest())} 个模板）"
         )
+
+    asyncio.run(_run())
+
+
+@app.command()
+def sync_seed_anchors() -> None:
+    """同步种子锚点库到本地缓存目录（docs/dev/21 第 3.1 节，同步模式照抄 sync-toolbox）。
+
+    同样是**独立命令**：出题过程中不隐式拉外部仓库，CI 在跑评测之前单独执行本命令。
+    """
+    configure_logging()
+
+    from skill_evaluate.agents.generator.seed_anchors import SeedAnchorLibrary
+    from skill_evaluate.config import get_settings
+
+    settings = get_settings().generator_trust
+    if not settings.seed_repo_url:
+        typer.secho(
+            "未配置 SKILLEVAL_GENERATOR_TRUST_SEED_REPO_URL：出题将不注入真实种子锚点"
+            "（这是合法状态，不是错误）。",
+            fg=typer.colors.YELLOW,
+        )
+        raise typer.Exit(code=0)
+
+    library = SeedAnchorLibrary()
+
+    async def _run() -> None:
+        if not await library.sync():
+            typer.secho(f"同步失败：{settings.seed_repo_url}", fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+        typer.echo(
+            f"已同步到 {library.root}（commit={library.commit_sha()}，"
+            f"{len(library.anchors())} 条锚点）"
+        )
+
+    asyncio.run(_run())
+
+
+@app.command()
+def preflight_fingerprint(
+    output: Annotated[
+        Path | None,
+        typer.Option(
+            "--output",
+            help="把探测到的指纹写到该文件（用于首次生成/更新 golden_fingerprint.json）。"
+            "不传则只打印，并与当前黄金指纹比对。",
+        ),
+    ] = None,
+) -> None:
+    """在目标沙箱里探测当前环境指纹（docs/dev/21 第 4 节）。
+
+    黄金指纹**只能由人**通过本命令生成并在代码评审里确认后提交——流水线里不存在自动更新它的
+    路径，"不允许静默漂移"正是指纹门禁的价值。不需要图上下文：探测走同步的
+    `run_environment_probe()`，不经 Hook 挂起。
+    """
+    configure_logging()
+
+    from skill_evaluate.config import get_settings
+    from skill_evaluate.errors import ConfigurationError, ExecutorBackendError
+    from skill_evaluate.nodes.preflight import (
+        PreflightDeps,
+        diff_fingerprint,
+        dump_fingerprint,
+        load_golden_fingerprint,
+        probe_current_fingerprint,
+    )
+
+    settings = get_settings().preflight
+
+    async def _run() -> None:
+        try:
+            fingerprint = await probe_current_fingerprint(
+                PreflightDeps().probe_runner(), timeout_s=settings.fingerprint_probe_timeout_s
+            )
+        except (ExecutorBackendError, ConfigurationError) as exc:
+            typer.secho(f"指纹探测失败：{exc}", fg=typer.colors.RED)
+            raise typer.Exit(code=1) from exc
+
+        rendered = dump_fingerprint(fingerprint)
+        if output is not None:
+            output.write_text(rendered, encoding="utf-8")
+            typer.echo(f"已写入 {output}，请人工审核 `git diff` 后提交。")
+            return
+
+        typer.echo(rendered)
+        golden = load_golden_fingerprint(settings.golden_fingerprint_path)
+        if golden is None:
+            typer.secho(f"未找到黄金指纹 {settings.golden_fingerprint_path}", fg=typer.colors.YELLOW)
+            return
+        mismatches = diff_fingerprint(fingerprint, golden)
+        if mismatches:
+            typer.secho("与黄金指纹不一致：", fg=typer.colors.RED)
+            for line in mismatches:
+                typer.echo(f"  - {line}")
+            raise typer.Exit(code=1)
+        typer.secho("与黄金指纹一致。", fg=typer.colors.GREEN)
 
     asyncio.run(_run())
 

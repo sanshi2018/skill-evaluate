@@ -188,3 +188,18 @@ class SuggestionStatus(StrEnum):
     PENDING = "pending"
     CONFIRMED = "confirmed"
     REJECTED = "rejected"
+
+
+class CollapseReason(StrEnum):
+    """一次反坍塌校验的结论口径（docs/dev/21 第 2 节）。
+
+    放行与阻断各有两种原因，**都要落到结构化日志/事件表里**：只记一个 bool 的话，
+    "冷启动放行"与"真的足够多样"在事后看起来一模一样，而前者意味着这批题其实没被检查过。
+    """
+
+    COLD_START = "cold_start"  # 放行：历史样本不足，无从判定新旧分布距离
+    DIVERSE = "diverse"  # 放行：新旧距离与批内距离都高于阈值
+    DISABLED = "disabled"  # 放行：配置显式关闭（会打 warning）
+    EMPTY_BATCH = "empty_batch"  # 阻断：一条用例都没有，无从谈多样性
+    COLLAPSED_VS_HISTORY = "collapsed_vs_history"  # 阻断：新题整体贴着历史题
+    COLLAPSED_INTRA_BATCH = "collapsed_intra_batch"  # 阻断：新题彼此高度雷同

@@ -17,6 +17,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
+from langgraph.errors import GraphBubbleUp
 from pydantic import BaseModel, Field
 
 from skill_evaluate.config import get_settings
@@ -241,6 +242,19 @@ class HermesSandboxHandle(BaseModel):
     sandbox_id: str
 
 
+class EnvironmentProbeResult(BaseModel):
+    """沙箱环境探测脚本的执行结果（docs/dev/21 第 4 节指纹校验）。
+
+    与 `HermesAssertionExecution` 同形，但**不经过** Hook 回调与 `ExecutionTrace`：指纹探测
+    不涉及被测 Skill、不是一次"Agent 执行"，塞进 `execution_traces` 只会得到一条 case_id
+    无处安放的假记录（与 docs/dev/06 不把出题包成 Trace 同一条理由）。
+    """
+
+    exit_code: int
+    stdout: str = ""
+    stderr: str = ""
+
+
 class HermesSandboxClient(Protocol):
     """真实网络交互留给具体部署时注入的实现（docs/dev/interfaces/03_hermes_sandbox_client.md）。"""
 
@@ -273,6 +287,21 @@ class HermesSandboxClient(Protocol):
 
     async def is_reachable(self) -> bool: ...
 
+    async def run_environment_probe(
+        self, *, script_content: str, timeout_s: int
+    ) -> EnvironmentProbeResult:
+        """在**与评测任务同一基础镜像**的沙箱里执行环境指纹探测脚本（docs/dev/21 第 4 节）。
+
+        实现方契约（`PreflightSettings.fingerprint_check_mode="hook_parallel"`）：
+        - 作为 Hermes 沙箱初始化 Hook 的一部分**并行**执行，不为它单独多起一个容器——这是架构
+          文档为控制冷启动耗时给出的应对方案；
+        - 同步返回（请求-响应），**不走** Hook 回调与 `pending_hooks` 挂起：它在图的最前置节点与
+          CLI 里都要能调用，而 CLI 没有图上下文；
+        - 不注入任何被测 Skill，不携带任何密钥类环境变量；
+        - 超时返回非零 `exit_code`（建议 124，与 GNU timeout 一致）而不是抛异常。
+        """
+        ...
+
 
 class UnconfiguredHermesSandboxClient:
     """默认占位客户端：未接入真实 Hermes 部署时使用，`create_sandbox` 显式报错而非
@@ -293,6 +322,16 @@ class UnconfiguredHermesSandboxClient:
 
     async def is_reachable(self) -> bool:
         return False
+
+    async def run_environment_probe(
+        self, *, script_content: str, timeout_s: int
+    ) -> EnvironmentProbeResult:
+        # 同 create_sandbox：没有真实沙箱就显式失败。伪造一个"探测成功"的指纹，等于让指纹
+        # 门禁在没有沙箱的环境里永远放行——而那正是它要拦下的情形。
+        raise ExecutorBackendError(
+            "HermesBackend 尚未接入真实的 Hermes 部署，无法执行沙箱环境指纹探测"
+            "（见 docs/dev/interfaces/03_hermes_sandbox_client.md「追加契约：环境指纹探测」）。"
+        )
 
 
 @register_backend("hermes")
@@ -373,7 +412,11 @@ class HermesBackend(ExecutorBackend):
                 reason=f"waiting for hermes hook: {wait_key}",
                 wait_key=wait_key,
             )
-        except ExecutorBackendError:
+        except (ExecutorBackendError, GraphBubbleUp):
+            # GraphBubbleUp（含 GraphInterrupt）是 LangGraph 挂起节点的控制流信号，**必须**原样
+            # 上抛：`suspend_and_wait()` 内部的 `interrupt()` 正是靠抛出它让图停下等待 Hook。
+            # 它是 Exception 的子类，被下面的兜底吞掉的话，每次挂起都会被误记成一条失败态
+            # Trace（docs/dev/21 实现金丝雀探针时发现并修正，属 docs/dev/03 的遗留缺陷）。
             raise
         except Exception as exc:  # noqa: BLE001 - 容错约定：execute() 不向上抛裸异常
             return build_failure_trace(
@@ -395,4 +438,20 @@ class HermesBackend(ExecutorBackend):
         return trace
 
     async def health_check(self) -> bool:
+        """轻量可达性检查（不执行任务）。
+
+        docs/dev/21 正文把金丝雀探针整个写进了本方法。实现时没有这样做：`health_check()` 是
+        `ExecutorBackend` 的通用契约，模块九（`nodes/cross_model`）已经把它当作"备用代理是否
+        可用"的**廉价**判断来用；而金丝雀要真实跑一次任务，只能在挂载了 checkpointer 的图节点
+        里执行（`execute()` 会挂起等 Hook）。二者合一会让本方法在图外被调用时必然失败。
+        金丝雀探针见 `executors/canary.py::run_canary_probe()`，它先调本方法再执行任务。
+        """
         return await self._sandbox_client.is_reachable()
+
+    async def run_environment_probe(
+        self, *, script_content: str, timeout_s: int
+    ) -> EnvironmentProbeResult:
+        """转发给沙箱客户端（docs/dev/21 第 4 节指纹校验的执行通道）。"""
+        return await self._sandbox_client.run_environment_probe(
+            script_content=script_content, timeout_s=timeout_s
+        )

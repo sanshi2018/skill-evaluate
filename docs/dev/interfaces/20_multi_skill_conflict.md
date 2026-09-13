@@ -119,7 +119,7 @@ await dispatch_alert(dispatcher, alert_type=..., run_id=..., payload=...)   # �
 ```
 
 `MultiSkillDeps.alerts()` 在**每次调用时**回落到当前注册的分发器——主图可以先装配、后注册通道。
-这是全项目的**通用**告警入口：`08` 冻结告警、`09` 挂起通知、`21` 生成坍塌告警接入时建议也改走它。
+这是全项目的**通用**告警入口：`08` 冻结告警、`09` 挂起通知接入时建议也改走它。`21` 的生成坍塌告警已经走它（`alert_type="generation_collapse_persistent"`，见 `interfaces/21` 第 1.3 节）。
 
 ### 4.2 本维度发出的告警
 
@@ -244,6 +244,6 @@ SKILLEVAL_MULTISKILL_CORE_SKILL_IDS='["sql-runner","git-helper","doc-writer","cs
 | 工作台双路 Trace 比对 | 数据已落库 | `22` | 第 4.4 节 |
 | 主图装配 | 平铺入口就位 | `24` | 第 0~3 节 |
 | Hermes 多技能挂载 | 契约已登记 | 真实 Hermes 接入 | 第 5 节 |
-| 跨技能状态突变侦测（环境变量 / 共用中间文件被覆写） | **未实现** | `21` 或后续 | 需要沙箱在步骤间隙上报文件 Hash 与环境变量快照（`HermesHookPayload` 追加字段），现有 Trace 只有最终 `fs_diff`，无从判定"是谁在何时改的" |
+| 跨技能状态突变侦测（环境变量 / 共用中间文件被覆写） | **未实现**（`21` 已落地但未覆盖：沙箱指纹只证明起跑时环境一致，见 `interfaces/21` 第 5 节） | 后续 | 需要沙箱在步骤间隙上报文件 Hash 与环境变量快照（`HermesHookPayload` 追加字段），现有 Trace 只有最终 `fs_diff`，无从判定"是谁在何时改的" |
 | 注意力衰减 → Optimizer 精简 / 强制渐进式披露 | **未实现**（只告警） | 视团队策略 | 可复用模块三的渐进式披露建议；本维度不产生补丁 |
 | MULTI_SKILL 多种组合手法的第二层注册表 | 未需要 | — | 若演化出多种手法，照 `agents/attacker/playbook.py` 抄（`interfaces/06` 第 3 节） |

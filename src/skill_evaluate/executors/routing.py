@@ -19,6 +19,9 @@ NODE_BACKEND_ROUTING: dict[str, ExecutorBackendType] = {
     "coverage_analysis": ExecutorBackendType.MINI,  # 模块六/七/八：主要是对已有 Trace/文本的分析
     "cross_model_generalization": ExecutorBackendType.PLUGGABLE,  # 模块九：异构矩阵
     "multi_skill_conflict": ExecutorBackendType.PLUGGABLE,  # 模块十：并发加载必须真实沙箱
+    # docs/dev/21：前置门禁证明的是"评测维度将要使用的那个真实沙箱"是否可信，必须与
+    # 模块一/三/四/五/九/十同一后端；拿 Mini 后端跑金丝雀永远健康，证明不了任何事。
+    "preflight": ExecutorBackendType.PLUGGABLE,
 }
 
 

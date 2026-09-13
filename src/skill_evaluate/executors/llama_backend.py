@@ -45,6 +45,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Literal, Protocol
 
 import httpx
+from langgraph.errors import GraphBubbleUp
 from pydantic import BaseModel
 
 from skill_evaluate.config import get_settings
@@ -394,7 +395,8 @@ class LlamaControlBackend(ExecutorBackend):
             trace_id = await suspend_and_wait(
                 reason=f"waiting for llama_control hook: {wait_key}", wait_key=wait_key
             )
-        except ExecutorBackendError:
+        except (ExecutorBackendError, GraphBubbleUp):
+            # GraphInterrupt 是挂起信号，必须上抛（同 HermesBackend.execute 的修正，docs/dev/21）。
             raise
         except Exception as exc:  # noqa: BLE001
             return self._failure(request, reason=str(exc))

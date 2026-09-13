@@ -1,6 +1,6 @@
 # 21 模块十一（续）：Generator 可信度与沙箱环境一致性证明
 
-> 状态：**待确认**
+> 状态：**已实现**（2026-09-13；实现与本文正文的出入以代码为准，逐条见第 9 节）
 > 路线图位置：第 3 层 / 第 1 份
 > 依赖：`06`（`_check_generation_collapse()` 占位、`seed_anchor_ids` 简化版实现）、`03`（`health_check()` 接口）、`04`（Repository 层）、`05`（结构化日志/告警）
 > 被依赖：`24`（主图装配——本文档的沙箱指纹/金丝雀探针作为整条流水线的最前置节点）
@@ -25,12 +25,12 @@ CREATE TABLE case_embeddings (
     embedding vector(1536) NOT NULL,   -- 维度对齐所选embedding模型
     created_at TIMESTAMPTZ NOT NULL
 );
-CREATE INDEX ON case_embeddings USING ivfflat (embedding vector_cosine_ops);
+CREATE INDEX ON case_embeddings USING ivfflat (embedding vector_cosine_ops);   -- ⚠️ 实现改为 hnsw，见第 9 节
 ```
 
 ```python
 # src/skill_evaluate/agents/generator/collapse_detector.py
-async def _check_generation_collapse(new_cases: list[TestCase]) -> bool:   # 替换文档06占位实现
+async def _check_generation_collapse(new_cases: list[TestCase]) -> bool:   # 替换文档06占位实现（⚠️ 实现拆为 assess/persist 两步，见第 9 节）
     embeddings = await embedding_client.embed([c.prompt for c in new_cases])
     for case, emb in zip(new_cases, embeddings):
         await case_embedding_repository.save(case.case_id, case.skill_id, emb)
@@ -122,7 +122,7 @@ async def sandbox_fingerprint_gate(state: PipelineState) -> PipelineState:
 ```python
 # 复用文档03 ExecutorBackend.health_check()接口(此前一直待接入)
 class HermesBackend(ExecutorBackend):
-    async def health_check(self) -> bool:
+    async def health_check(self) -> bool:   # ⚠️ 实现未把金丝雀放进 health_check，见第 9 节
         canary_skill = load_canary_skill()   # 固定的、极简单确定性的探针技能定义(本文档新增,
                                                 # 如"读取本地文本文件并输出固定JSON结构")
         canary_case = TestCase(case_id="__canary__", skill_id="__canary__", category=TestCaseCategory.POSITIVE,
@@ -176,6 +176,34 @@ sandbox_fingerprint_gate → canary_probe_gate → （其余全部评测维度�
 | `PreflightSettings` 在 CI 中的具体模式选择 | 默认值已给出 | `24` | 按 CI 触发场景（PR/Nightly/镜像变更）选择对应模式 |
 
 ---
+
+## 9. 实施记录（与正文的出入，以代码为准）
+
+接入文档：`docs/dev/interfaces/21_generator_trust_and_preflight.md`。
+
+| # | 正文 | 实现 | 原因 |
+|---|---|---|---|
+| 1 | 判定前先把新题向量写库 | `CollapseDetector.assess()` 只算不写；用例落库、激活前再 `persist()` | `case_embeddings.case_id` 外键指向 `test_cases`，判定时新题尚未落库；且被拒的废题不能进入历史分布，否则下次越比越像 |
+| 2 | `_check_generation_collapse()` 替换函数体 | 删除占位函数，改为 `TestSuiteService(collapse_detector=...)` 注入 | 需要 embedding 客户端与两张表，模块级函数无法注入替身；两步时序也不是一个 bool 能表达的 |
+| 3 | 只做新旧分布对比 | 追加**批内两两距离**检查（批量 ≥4，固定 initial 阈值） | 首次生成历史为空必然冷启动放行，18 条雷同题会成为第一版测试集并永久充当"历史分布" |
+| 4 | `_current_collapse_threshold(skill_id, historical_count)` | `current_collapse_threshold(historical_count)` | 阈值只取决于样本量，多一个不用的参数会让人误以为有按 Skill 定制的阈值 |
+| 5 | —— | 历史向量按 `embedding_model` 过滤；存量用例自动回填 | 换模型后新旧向量不在同一空间；不回填则已有项目永远停在冷启动 |
+| 6 | 连续坍塌计数 | "自当前 active 版本 `created_at` 以来的坍塌事件数"，达到上限**恰好一次**告警，抛 `GenerationCollapseError(requires_human_seed=True)` | 成功激活天然清零，无需独立计数器；阻塞挂起属于 22 |
+| 7 | `ivfflat` 索引 | `hnsw` 索引 | ivfflat 在建索引时按已有数据训练聚类中心，迁移时表为空，召回率极差且不会自动改善 |
+| 8 | 种子检索"复用 2.1 的向量表" | 进程内按 `(commit_sha, embedding_model)` 缓存锚点向量 | 锚点不是测试用例，外键不允许入 `case_embeddings`；23 会把锚点索引进 `search_documents` |
+| 9 | `seed_anchor_ids` 简化版语义（id 当文本） | `None`=自动检索 / `[]`=不要 / 非空=按 id 精确取；模型回填 `seed_anchor_id`，核对后写 `<anchor_id>@<commit_sha>` | 让每条用例能溯源到具体锚点与种子库版本 |
+| 10 | `scripts/env_fingerprint_probe.sh` | `src/skill_evaluate/nodes/preflight/env_fingerprint_probe.sh` | 脚本正文由本系统下发给沙箱，必须随包分发（`scripts/` 不进 wheel） |
+| 11 | 探测"通过 HermesBackend 发起一次轻量任务" | `HermesSandboxClient.run_environment_probe()`（同步请求-响应，新增协议方法） | 探测不涉及 Skill，包装成 `execute()` 会产生假 Trace，且 CLI 生成黄金指纹时没有图上下文可挂起 |
+| 12 | 金丝雀写进 `HermesBackend.health_check()` | `executors/canary.py::run_canary_probe()`；`health_check()` 保持轻量可达性检查 | 模块九已把 `health_check()` 当廉价判断使用；金丝雀执行需要图上下文（挂起等 Hook） |
+| 13 | 金丝雀校验 `'"content"' in final_response` | 失败态 Trace / 未加载 SKILL.md / `content` 与 `data.txt` 不逐字一致均判失败 | 文件读不到时模型最常见的行为是编一个 content |
+| 14 | `raise PipelineSuspended(...)` | `InfrastructureEnvironmentError(PipelineSuspended)`，带 `gate` / `details` | 主图按挂起处理不用改；22 可区分"修环境"与"业务仲裁" |
+| 15 | `return state` | 节点只返回私有键增量 | 返回整个 state 会让 add-reducer 字段翻倍 |
+| 16 | 缺少黄金指纹时的行为未定义 | 门禁失败并提示 `skill-evaluate preflight-fingerprint --output ...` | 没有基线就证明不了"没有漂移" |
+| 17 | 两种模式 | 指纹 `hook_parallel`/`off`，金丝雀 `every_run`/`nightly_or_image_change`/`off`；镜像标识取 `SANDBOX_IMAGE_REF`，否则回落为指纹摘要 | `off` 仅限无真实沙箱的本地开发，且会写进状态、不静默 |
+| 18 | 节点名 `preflight.fingerprint` / `preflight.canary`（docs/dev/24） | `preflight.sandbox_fingerprint_gate` / `preflight.canary_probe_gate`（`ENTRY_NODE` / `TERMINAL_NODE`） | 与各维度"前缀.函数名"命名一致 |
+
+顺带修正的前序缺陷：`HermesBackend.execute()` 与 `LlamaControlBackend` callback 模式的 `except Exception`
+吞掉了 LangGraph 的 `GraphInterrupt`，挂起信号被记成失败态 Trace（docs/dev/03 / 19 遗留），已修正并加回归测试。
 
 ## 下一步
 

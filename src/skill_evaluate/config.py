@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -457,6 +458,85 @@ class MultiSkillSettings(BaseSettings):
     execution_timeout_s: int = 90
 
 
+class GeneratorTrustSettings(BaseSettings):
+    """模块十一续（docs/dev/21 Part A/B）：Generator 测试集可信度——反坍塌 + 种子锚点。
+
+    架构文档对这一节的缺点写得很直白："过度严格的语义距离阻断可能导致 Generator 陷入
+    无限重试却无法达标的死锁"。因此阈值做成**随样本量连续收紧**的弹性区间（initial →
+    mature），并用 `max_consecutive_collapses` 给"机器自己重试"设一个硬上限，到点就叫人。
+    """
+
+    model_config = SettingsConfigDict(env_prefix="SKILLEVAL_GENERATOR_TRUST_")
+
+    # 反坍塌校验总开关。**只**应在确实没有 embedding 通道的环境（离线开发机）关闭：
+    # 关掉后每次生成都会打一条 warning，报告读者看得到"这批题没过反坍塌校验"。
+    collapse_check_enabled: bool = True
+
+    # 平均余弦距离低于阈值 = 坍塌。冷启动宽容、数据飞轮成熟后严格（docs/dev/21 第 2.2 节）。
+    collapse_distance_threshold_initial: float = Field(default=0.15, ge=0.0, le=2.0)
+    collapse_distance_threshold_mature: float = Field(default=0.35, ge=0.0, le=2.0)
+    # 该 Skill 已入库的历史 embedding 数达到它即视为"成熟"，中间线性插值。
+    maturity_sample_count: int = Field(default=200, ge=1)
+    # 历史样本少于它时不做"新旧对比"（无从判定坍塌，冷启动天然应当宽容）。
+    min_historical_samples: int = Field(default=5, ge=1)
+    # 新旧对比时取最近多少条历史 embedding。距离是 O(新 × 旧 × 维度) 的纯 Python 计算，
+    # 50 × 18 × 1536 ≈ 140 万次乘法，毫秒级；再大就该交给 docs/dev/23 的库内检索。
+    historical_window: int = Field(default=50, ge=1)
+    # 批内两两距离检查的最小批量（实现阶段追加，见 collapse_detector.py 模块头）。
+    # 批太小时"两两平均距离"方差极大，两三条题恰好相近不能说明坍塌。
+    min_batch_size_for_intra_check: int = Field(default=4, ge=2)
+    # 同一 skill_id 自上次成功激活以来连续坍塌几次就发告警呼叫人工注入种子。
+    max_consecutive_collapses: int = Field(default=3, ge=1)
+
+    # embedding 模型（OpenRouter 的 OpenAI 兼容 `/embeddings` 端点，复用 LLMSettings 的
+    # api_key/base_url——全项目只有 OpenRouter 一条出口）。维度必须与迁移 0009 里
+    # `vector(1536)` 一致，客户端收到维度不符的向量会直接报错而不是截断/补零。
+    embedding_model: str = "openai/text-embedding-3-small"
+    embedding_dimensions: int = 1536
+    embedding_batch_size: int = Field(default=64, ge=1)
+    # 单条输入的字符上限，超出截断后再 embed。模块五的上下文洪泛类对抗题动辄几十 KB，原样送去
+    # 会被上游以超过模型上下文（text-embedding-3 为 8191 token）拒绝，把一次出题变成一次失败；
+    # 判断"题目是否雷同"看开头这一段已经足够。
+    embedding_max_input_chars: int = Field(default=8000, ge=1)
+
+    # ---- Part B：种子锚点库（外部独立仓库，同步机制照抄 docs/dev/10 断言工具箱） ----
+    seed_repo_url: str | None = None
+    seed_repo_ref: str = "main"
+    seed_cache_dir: str = "~/.cache/skill-evaluate/seed-anchors"
+    # 每次出题注入几条最相关的真实 Prompt 作 few-shot。给太多模型会开始照抄内容。
+    seed_anchor_count: int = Field(default=5, ge=0)
+
+
+class PreflightSettings(BaseSettings):
+    """流水线前置质量门禁（docs/dev/21 Part C/D、第 6 节调度策略）。"""
+
+    model_config = SettingsConfigDict(env_prefix="SKILLEVAL_PREFLIGHT_")
+
+    # 指纹校验模式：
+    # - `hook_parallel`（默认）：经 `HermesSandboxClient.run_environment_probe()` 下发探测脚本，
+    #   契约要求 Hermes 在沙箱初始化 Hook 里与初始化并行执行（不额外起容器）；
+    # - `off`：跳过。**仅限**没有真实沙箱的本地开发，节点会打 warning 并把 `off` 写进状态，
+    #   报告读者能看到这次评测没有做环境一致性证明。
+    fingerprint_check_mode: Literal["hook_parallel", "off"] = "hook_parallel"
+    # 金丝雀探针模式：`every_run` | `nightly_or_image_change`（默认，架构文档的降本方案）| `off`。
+    canary_check_mode: Literal["every_run", "nightly_or_image_change", "off"] = (
+        "nightly_or_image_change"
+    )
+    # 黄金指纹文件路径（相对 CWD，CI 在仓库根目录执行）。**纳入本项目仓库版本控制**，
+    # 升级基础镜像时人工重新生成并在代码评审里确认，不设计自动更新。
+    golden_fingerprint_path: str = "golden_fingerprint.json"
+    # 指纹探测脚本在沙箱内的超时。探测脚本只跑 `--version` 与包清单哈希，30s 已很宽松。
+    fingerprint_probe_timeout_s: int = Field(default=30, ge=1)
+    # 金丝雀探针单次执行墙钟超时（docs/dev/21 第 5 节原文 15s）：它"永远不应该失败"，
+    # 也不该慢——15 秒跑不完一次读文件本身就是基础设施异常。
+    canary_timeout_s: int = Field(default=15, ge=1)
+    # `nightly_or_image_change` 下，上次成功探针在多少小时内且镜像未变时跳过。
+    canary_max_age_hours: int = Field(default=24, ge=1)
+    # 当前基础镜像标识（CI 注入镜像 digest）。未配置时回落为本次指纹的摘要——指纹变了
+    # 镜像必然变了；两者都拿不到时无法判断"镜像是否变更"，一律实跑探针。
+    sandbox_image_ref: str | None = None
+
+
 class JudgeSettings(BaseSettings):
     """Judge Agent 的可信度机制参数（docs/dev/08）。
 
@@ -558,6 +638,8 @@ class Settings(BaseSettings):
     coverage: CoverageSettings = Field(default_factory=CoverageSettings)
     cross_model: CrossModelSettings = Field(default_factory=CrossModelSettings)
     multi_skill: MultiSkillSettings = Field(default_factory=MultiSkillSettings)
+    generator_trust: GeneratorTrustSettings = Field(default_factory=GeneratorTrustSettings)
+    preflight: PreflightSettings = Field(default_factory=PreflightSettings)
     judge: JudgeSettings = Field(default_factory=JudgeSettings)
     optimizer: OptimizerSettings = Field(default_factory=OptimizerSettings)
     validator: ValidatorSettings = Field(default_factory=ValidatorSettings)

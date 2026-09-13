@@ -189,7 +189,8 @@ class AttackerAgent(GeneratorAgent):
                 expected_output=None,
                 target_capability_ids=generated.target_capability_ids,
                 negative_constraint_ids=generated.negative_constraint_ids,
-                seed_anchor_id=None,
+                # docs/dev/21：与父类同一口径核对锚点溯源（父类 generate() 已解析好锚点）。
+                seed_anchor_id=self._resolve_seed_anchor_ref(generated, request),
                 probe_target_reference=None,
                 attack_subtype=subtype,
                 generator_run_id=generator_run_id,

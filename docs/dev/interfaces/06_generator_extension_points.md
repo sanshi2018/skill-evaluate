@@ -1,7 +1,7 @@
 # 接入文档：Generator 扩展点（docs/dev/06 留给后续模块的接口）
 
 > 由谁接入：`15`（Attacker，**见第 3 节的例外**）、`16/17`（模块六/七覆盖率补盲）、`19`（模块九）、
-> `20`（模块十组合矩阵）、`21`（种子锚点与反坍塌）。
+> `20`（模块十组合矩阵）、`21`（种子锚点与反坍塌，**已落地，见第 4 节**）。
 > 当前状态：接口全部就位，`REUSE` / `FORCE_REGENERATE` / `INCREMENTAL_PATCH`
 > 三态已完整实现并有测试覆盖（`tests/skill_evaluate/test_generator.py`）。
 
@@ -226,28 +226,32 @@ version = await TestSuiteService().incremental_patch_categories(
 
 ## 4. 反坍塌校验与种子锚点（`21`）
 
-### 4.1 `_check_generation_collapse()`
+> ✅ **`21` 已落地**，完整说明见 `docs/dev/interfaces/21_generator_trust_and_preflight.md` 第 1、2 节。
+> 与本节原文的出入（以代码为准）：
 
-```python
-# src/skill_evaluate/agents/generator/service.py
-async def _check_generation_collapse(new_cases: list[TestCase]) -> bool: ...
-```
+### 4.1 反坍塌：占位函数已删除，改为注入检测器
 
-当前占位实现：非空即放行。返回 False 时 `_generate_and_activate()` 会抛
-`GenerationError` 并**阻断 activate**（坍塌的用例集比没有用例集更危险——它会给
-出一个虚高的通过率）。
+原文约定"`21` 只替换 `_check_generation_collapse()` 函数体、调用结构不变"。实现时发现两点做不到：
 
-`21` 接入时只需替换函数体为"计算 prompt 向量与历史用例库的分布距离"，
-`_generate_and_activate()` 的调用结构不需要改动。依赖 `23` 的 pgvector 检索层。
+- 检测需要 embedding 客户端与两张表（`case_embeddings` / `generation_collapse_events`），模块级函数只能
+  读全局单例，单测无从替换；
+- 向量必须在用例落库**之后**写（外键），且被拒批次不能写——判定与写入要拆成 `assess()` / `persist()` 两步，
+  一个返回 bool 的函数表达不了。
 
-### 4.2 `GenerationRequest.seed_anchor_ids`
+因此改为 `TestSuiteService(collapse_detector=..., collapse_event_repo=..., alert_dispatcher=...)`，
+默认值即真实实现，**既有调用方不用改**。坍塌时抛 `GenerationCollapseError`（`GenerationError` 子类）。
+**不依赖 `23`**：最小向量基础设施由 `21` 自建。
 
-当前 `GeneratorAgent._resolve_seed_texts()` 是简化版：直接把 id 原文当作
-few-shot 文本注入 Prompt（模板里的 `seed_block` 宏已就位）。`21` 接入 GitHub
-托管的种子锚点配置文件后，替换该方法实现即可，调用点不变。
+⚠️ 单测里构造 `TestSuiteService` 并走到生成路径时，必须注入替身检测器（默认检测器会访问数据库与
+embedding 通道），参考 `tests/skill_evaluate/test_generator.py::PassThroughCollapseDetector`。
 
-注意 `TestCase.seed_anchor_id` 当前恒为 `None`（因为没有真实种子库可溯源）。
-`21` 落地后需要在 `_generate_category()` 里回填这个字段。
+### 4.2 `GenerationRequest.seed_anchor_ids`：语义已升级
+
+- `None`（默认）= `GeneratorAgent` 按 `skill.description` 自动检索种子库；`[]` = 显式不要；非空 = 按
+  `<domain_tag>/<id>` 精确取。**"把 id 原文当 few-shot 文本"的简化版语义已废弃**。
+- 新增 `GenerationRequest.seed_anchors: list[SeedAnchor]`、`GeneratedCase.seed_anchor_id`；
+  `TestCase.seed_anchor_id` 现在会被回填为 `<anchor_id>@<commit_sha>`（`AttackerAgent` 同口径）。
+- `GeneratorAgent(seed_anchor_resolver=...)` 可注入；种子库未同步时默认解析器直接返回空列表、不发请求。
 
 ## 5. Optimizer 闭环的澄清（`09`/`11`）
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import TypedDict
 
-from sqlalchemy import desc, select, update
+from sqlalchemy import desc, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from skill_evaluate.errors import PersistenceError
@@ -17,10 +17,13 @@ from skill_evaluate.persistence.db import new_session
 from skill_evaluate.persistence.models import (
     AssertionResultORM,
     AssertionSpecORM,
+    CanaryProbeHistoryORM,
     CapabilityTreeORM,
+    CaseEmbeddingORM,
     ConsensusResultORM,
     DimensionResultORM,
     ExecutionTraceORM,
+    GenerationCollapseEventORM,
     GoldenCaseORM,
     HumanApprovalORM,
     JudgeHealthStatusORM,
@@ -45,6 +48,7 @@ from skill_evaluate.state.enums import (
     SuggestionType,
     TestCaseCategory,
 )
+from skill_evaluate.state.generator_trust import CanaryProbeRecord, GenerationCollapseEvent
 from skill_evaluate.state.golden import GoldenCase, JudgeMissRecord
 from skill_evaluate.state.judge import ConsensusResult, JudgeVerdict
 from skill_evaluate.state.patch import Patch, PatchApplicationResult
@@ -1214,3 +1218,179 @@ def _orm_to_suggestion(row: TestCaseSuggestionORM) -> TestCaseSuggestion:
         status=SuggestionStatus(row.status),
         created_at=row.created_at,
     )
+
+
+# --------------------------------------------------------------------------- #
+# docs/dev/21：Generator 可信度与前置门禁
+# --------------------------------------------------------------------------- #
+
+
+class CaseEmbeddingRepository:
+    """`case_embeddings` 表存取（docs/dev/21 第 2.1 节）。
+
+    所有查询都带 `embedding_model` 过滤：换了 embedding 模型后，新旧向量不在同一个空间里，
+    拿它们算距离得到的是一个毫无意义却看起来很正常的数字。按模型过滤让旧向量自然退出
+    参照系，历史分布从新模型开始重新积累（冷启动阈值兜底这段时间）。
+    """
+
+    async def save_many(
+        self, *, skill_id: str, embedding_model: str, vectors: dict[str, list[float]]
+    ) -> None:
+        """批量 upsert。调用方必须保证这些 case_id 已经写进 `test_cases`（外键）。"""
+        if not vectors:
+            return
+        now = datetime.now(UTC)
+        async with new_session() as session:
+            for case_id, vector in vectors.items():
+                stmt = pg_insert(CaseEmbeddingORM).values(
+                    case_id=case_id,
+                    skill_id=skill_id,
+                    embedding=vector,
+                    embedding_model=embedding_model,
+                    created_at=now,
+                )
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=["case_id"],
+                    set_={
+                        "embedding": stmt.excluded.embedding,
+                        "embedding_model": stmt.excluded.embedding_model,
+                        "created_at": stmt.excluded.created_at,
+                    },
+                )
+                await session.execute(stmt)
+            await session.commit()
+
+    async def get_recent(
+        self,
+        *,
+        skill_id: str,
+        embedding_model: str,
+        exclude_case_ids: list[str] | None = None,
+        limit: int = 50,
+    ) -> list[list[float]]:
+        """该 Skill 最近写入的 `limit` 条历史向量（新 → 旧）。"""
+        async with new_session() as session:
+            query = select(CaseEmbeddingORM.embedding).where(
+                CaseEmbeddingORM.skill_id == skill_id,
+                CaseEmbeddingORM.embedding_model == embedding_model,
+            )
+            if exclude_case_ids:
+                query = query.where(CaseEmbeddingORM.case_id.not_in(exclude_case_ids))
+            rows = (
+                await session.execute(
+                    query.order_by(desc(CaseEmbeddingORM.created_at)).limit(limit)
+                )
+            ).scalars()
+            return [list(vector) for vector in rows]
+
+    async def count_by_skill(self, *, skill_id: str, embedding_model: str) -> int:
+        """该 Skill 的历史向量总数——弹性阈值的"数据飞轮成熟度"就按它插值。"""
+        async with new_session() as session:
+            result = await session.execute(
+                select(func.count())
+                .select_from(CaseEmbeddingORM)
+                .where(
+                    CaseEmbeddingORM.skill_id == skill_id,
+                    CaseEmbeddingORM.embedding_model == embedding_model,
+                )
+            )
+            return int(result.scalar_one())
+
+    async def missing_case_ids(self, case_ids: list[str], *, embedding_model: str) -> list[str]:
+        """`case_ids` 里还没有（当前模型）向量的那些，供存量用例回填历史分布。"""
+        if not case_ids:
+            return []
+        async with new_session() as session:
+            rows = (
+                await session.execute(
+                    select(CaseEmbeddingORM.case_id).where(
+                        CaseEmbeddingORM.case_id.in_(case_ids),
+                        CaseEmbeddingORM.embedding_model == embedding_model,
+                    )
+                )
+            ).scalars()
+            present = set(rows)
+            return [case_id for case_id in case_ids if case_id not in present]
+
+
+class GenerationCollapseEventRepository:
+    """`generation_collapse_events` 表存取（docs/dev/21 第 2.2 节）。"""
+
+    async def record(self, event: GenerationCollapseEvent) -> None:
+        async with new_session() as session:
+            stmt = pg_insert(GenerationCollapseEventORM).values(
+                event_id=event.event_id,
+                skill_id=event.skill_id,
+                generator_run_id=event.generator_run_id,
+                generation_mode=event.generation_mode,
+                triggered_by=event.triggered_by,
+                reason=event.reason.value,
+                avg_distance_to_history=event.avg_distance_to_history,
+                intra_batch_distance=event.intra_batch_distance,
+                threshold=event.threshold,
+                historical_count=event.historical_count,
+                new_case_count=event.new_case_count,
+                occurred_at=event.occurred_at,
+            )
+            stmt = stmt.on_conflict_do_nothing(index_elements=["event_id"])
+            await session.execute(stmt)
+            await session.commit()
+
+    async def count_since(self, *, skill_id: str, since: datetime | None) -> int:
+        """`since` 之后该 Skill 的坍塌事件数；`since=None` 表示从未成功激活过，数全部。
+
+        调用方传"当前 active 用例集版本的 created_at"——成功激活会刷新它，于是这个数就是
+        "连续坍塌次数"，不需要额外维护一个会与真实激活状态不同步的计数器。
+        """
+        async with new_session() as session:
+            query = (
+                select(func.count())
+                .select_from(GenerationCollapseEventORM)
+                .where(GenerationCollapseEventORM.skill_id == skill_id)
+            )
+            if since is not None:
+                query = query.where(GenerationCollapseEventORM.occurred_at > since)
+            return int((await session.execute(query)).scalar_one())
+
+
+class CanaryProbeHistoryRepository:
+    """`canary_probe_history` 表存取（docs/dev/21 第 6 节）。"""
+
+    async def record(self, record: CanaryProbeRecord) -> None:
+        async with new_session() as session:
+            session.add(
+                CanaryProbeHistoryORM(
+                    probe_id=record.probe_id,
+                    run_id=record.run_id,
+                    image_ref=record.image_ref,
+                    passed=record.passed,
+                    reasons=list(record.reasons),
+                    probed_at=record.probed_at,
+                )
+            )
+            await session.commit()
+
+    async def latest_success(self, *, image_ref: str) -> CanaryProbeRecord | None:
+        """同一镜像下最近一次**成功**的探针。失败记录不参与跳过判定。"""
+        async with new_session() as session:
+            row = (
+                await session.execute(
+                    select(CanaryProbeHistoryORM)
+                    .where(
+                        CanaryProbeHistoryORM.image_ref == image_ref,
+                        CanaryProbeHistoryORM.passed.is_(True),
+                    )
+                    .order_by(desc(CanaryProbeHistoryORM.probed_at))
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                return None
+            return CanaryProbeRecord(
+                probe_id=row.probe_id,
+                run_id=row.run_id,
+                image_ref=row.image_ref,
+                passed=row.passed,
+                reasons=list(row.reasons or []),
+                probed_at=row.probed_at,
+            )

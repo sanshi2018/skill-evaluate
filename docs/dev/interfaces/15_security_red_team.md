@@ -423,8 +423,8 @@ DoS 探测**不用** `probe_timeout_s`，它显式取
 | 预留位置 | 当前状态 | 由哪份文档接入 | 接入方式 |
 |---|---|---|---|
 | 安全判定的黄金基准用例 | 依赖 docs/dev/08 的黄金库，库里没有时注入静默跳过 | `21` / 运维 | 往 `golden_cases` 表加 `template_key='prompt_injection_defense'` / `'security_severity_rating'` 的条目，本维度不需要改动 |
-| Attacker 的种子锚点 | `_resolve_seed_texts()` 继承父类的简化实现 | `21` | 替换 `GeneratorAgent._resolve_seed_texts()` 的实现，本维度自动跟上 |
-| 反坍塌校验对对抗用例的适用性 | 走父类同一条 `_check_generation_collapse()` | `21` | 同上，不需要为对抗用例单开一条 |
+| Attacker 的种子锚点 | ✅ `21` 已实现：父类 `generate()` 统一解析锚点，`AttackerAgent` 回填 `seed_anchor_id` 同口径（攻击模板当前不渲染 `seed_block`，故对抗用例的溯源恒为 None） | `21` | 如需让红队题贴近真实语气，在 `attacker/prompts/_shared.jinja` 增加 `seed_block` 即可 |
+| 反坍塌校验对对抗用例的适用性 | ✅ `21` 已实现：走 `TestSuiteService` 同一个检测器（`GenerationCollapseError` 是 `GenerationError` 子类，本维度的异常处理不变） | `21` | 超长的 DoS 类提示词在 embedding 前按 `embedding_max_input_chars` 截断 |
 | 共识未达成的挂起 | 抛 `PipelineSuspended` | `22` | 与 docs/dev/09 的闭环挂起同一种接法 |
 | 中危是否升级为阻断项 | 当前不阻断（见第 7.2 节） | 运维调优，非新文档职责 | 把 `REPORT_BLOCKING_SEVERITIES` 加上 MEDIUM 一处即可 |
 | 跨模型跑安全探测 | 未涉及（`19` 已落地，**未**跨模型跑安全探测；AppSec 闭环可选叠加 `with_consensus_gate` / `with_quirk_stripping_gate`，见 `interfaces/19` 第 4 节） | `19` | `19` 自己构造带 `sampling_overrides` 的 `ExecutionRequest`，**不要**改本维度的 `_run_probe()`（与 docs/dev/interfaces/11 第 4.2 节同一条约定） |

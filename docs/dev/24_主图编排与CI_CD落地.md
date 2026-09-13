@@ -46,6 +46,12 @@ Phase E（收尾，串行）
   rag_archive_if_passed（文档23 archive_successful_run，条件调用）
 ```
 
+> ⚠️ 文档 21 实现后的修正：Phase 0 请用 `skill_evaluate.nodes.preflight.add_preflight_nodes(builder)` 装配，
+> 节点名以 `ENTRY_NODE`（`preflight.sandbox_fingerprint_gate`）/ `TERMINAL_NODE`（`preflight.canary_probe_gate`）
+> 常量为准，下面代码里的 `"preflight.fingerprint"` / `"preflight.canary"` 与裸函数是占位写法；主图 schema 需并入
+> `PreflightState`，进入 Phase 0 前须已创建 `runs` 记录（金丝雀走 Hook 回调）。详见
+> `docs/dev/interfaces/21_generator_trust_and_preflight.md` 第 3 节。
+
 ```python
 # src/skill_evaluate/graph/main.py
 def build_main_graph() -> CompiledGraph:
@@ -213,6 +219,8 @@ jobs:
       - name: Force canary probe if base image changed
         if: contains(github.event.pull_request.changed_files, 'Dockerfile')
         run: echo "SKILLEVAL_PREFLIGHT_CANARY_CHECK_MODE=every_run" >> $GITHUB_ENV
+# 文档 21 实现补充：同时注入 SKILLEVAL_PREFLIGHT_SANDBOX_IMAGE_REF=<基础镜像 digest>，
+# 未注入时"镜像是否变更"回落为按沙箱指纹摘要判断。
 ```
 
 `CHANGED_SKILL_PATH` 的解析（从 PR diff 中提取具体哪个 Skill 目录变更）用标准 `git diff --name-only` 结合路径前缀匹配即可，属于 CI 脚本细节，本文档不展开逐行实现。

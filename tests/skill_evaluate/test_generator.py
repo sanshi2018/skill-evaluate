@@ -17,10 +17,16 @@ from skill_evaluate.agents.generator import (
     TestSuiteService,
     extract_keywords,
 )
+from skill_evaluate.agents.generator.collapse_detector import CollapseAssessment
 from skill_evaluate.agents.generator.service import _split_dataset
 from skill_evaluate.agents.llm import LLMCompletion
 from skill_evaluate.errors import GenerationError
-from skill_evaluate.state.enums import DatasetSplit, GenerationMode, TestCaseCategory
+from skill_evaluate.state.enums import (
+    CollapseReason,
+    DatasetSplit,
+    GenerationMode,
+    TestCaseCategory,
+)
 from skill_evaluate.state.skill import SkillDefinition
 from skill_evaluate.state.test_case import TestCase, TestSuiteVersion
 
@@ -79,6 +85,25 @@ class CountingLLMClient:
         )
 
 
+class PassThroughCollapseDetector:
+    """反坍塌检测替身：恒定放行、不碰 embedding 与库（docs/dev/21 的检测逻辑在
+    `test_generator_trust.py` 单独覆盖，这里只测生命周期语义）。"""
+
+    async def assess(
+        self, new_cases: list[TestCase], *, inherited_case_ids: list[str] | None = None
+    ) -> CollapseAssessment:
+        return CollapseAssessment(
+            passed=True,
+            reason=CollapseReason.DIVERSE,
+            threshold=0.15,
+            historical_count=0,
+            new_case_count=len(new_cases),
+        )
+
+    async def persist(self, assessment: CollapseAssessment) -> None:
+        return None
+
+
 class FakeSuiteRepo:
     def __init__(self, active: TestSuiteVersion | None = None) -> None:
         self.active = active
@@ -115,6 +140,7 @@ def _service(
         generator=GeneratorAgent(model="claude-haiku-4-5", llm_client=llm),
         test_suite_repo=suite_repo,  # type: ignore[arg-type]
         test_case_repo=case_repo,  # type: ignore[arg-type]
+        collapse_detector=PassThroughCollapseDetector(),
     )
     return service, suite_repo, case_repo
 
@@ -524,6 +550,7 @@ class ExtraCategoriesTests:
             generator=GeneratorAgent(model="claude-haiku-4-5", llm_client=llm),
             test_suite_repo=suite_repo,  # type: ignore[arg-type]
             test_case_repo=case_repo,  # type: ignore[arg-type]
+            collapse_detector=PassThroughCollapseDetector(),
         )
         return service, suite_repo
 

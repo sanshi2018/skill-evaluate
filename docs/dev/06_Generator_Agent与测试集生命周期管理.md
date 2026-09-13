@@ -188,6 +188,11 @@ async def _check_generation_collapse(new_cases: list[TestCase]) -> bool:
 
 这个占位钩子保证文档 21 接入时只需替换函数体，不需要改动 `_generate_and_activate()` 的调用结构。
 
+> ⚠️ **文档 21 已实现，以代码为准**：占位函数已删除，改为 `TestSuiteService(collapse_detector=...)` 注入的
+> `assess()` / `persist()` 两步检测器（向量须在用例落库后写、被拒批次不写，一个 bool 函数表达不了）；
+> 不依赖文档 23，最小向量基础设施由 21 自建。`seed_anchor_ids` 的"id 当文本"简化语义已废弃。
+> 详见 `docs/dev/interfaces/21_generator_trust_and_preflight.md` 第 1、2 节。
+
 ## 8. 与 Judge/Optimizer 闭环的接口预留
 
 模块一的完整闭环（生成 → 执行 → 判定 → 失败重写 description → 再执行）依赖文档 08（Judge）、文档 09（Optimizer）、文档 11（模块一流水线）。本文档只保证 Generator 侧提供的接口能被该闭环正确调用：
@@ -198,8 +203,8 @@ async def _check_generation_collapse(new_cases: list[TestCase]) -> bool:
 
 | 预留位置 | 当前状态 | 由哪份文档接入 | 接入方式 |
 |---|---|---|---|
-| `_check_generation_collapse()` | 占位恒真实现 | `21` | 替换函数体为向量距离计算，依赖文档 23 的 pgvector 检索层 |
-| `GenerationRequest.seed_anchor_ids` | 仅作为 few-shot 文本注入，无版本控制的种子库 | `21` | 接入 GitHub 托管的种子锚点配置文件，实现版本化拉取 |
+| `_check_generation_collapse()` | ✅ `21` 已实现（改为注入式 `CollapseDetector`，占位函数已删除） | `21` | 见 `interfaces/21` 第 1 节 |
+| `GenerationRequest.seed_anchor_ids` | ✅ `21` 已实现（Git 托管种子库 + embedding 检索 + `TestCase.seed_anchor_id` 溯源） | `21` | 见 `interfaces/21` 第 2 节 |
 | `CapabilityFocus` 的实际构造方 | 模型已定义，无生产者 | `16/17`（模块六/七）、`20`（模块十组合矩阵） | 各文档在检测到盲区后，构造 `CapabilityFocus` 并调用 `incremental_patch()` |
 | `triggered_by="cross_model_sampling"` 的调用方 | 字符串占位，未实际使用；**`19` 实现时决定不启用** | — | 模块九是非阻断维度，不应拥有改变用例集的权力；验证集为空时如实报告 NEEDS_HUMAN_REVIEW（见 `docs/dev/19` 第 3.2 节）。该取值保留供将来需要时使用 |
 | Langfuse 打点挂载 | 未挂载 | 本文档遗留给自身内部的 `_call_llm()` 封装 | 见第 10 节说明 |

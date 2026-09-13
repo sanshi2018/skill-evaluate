@@ -28,6 +28,15 @@ from typing import Any
 
 from jinja2 import StrictUndefined, Template
 
+from skill_evaluate.agents.git_repo_cache import (
+    UNKNOWN_REF,
+    RecordListParseError,
+    git_head_sha,
+    git_sync,
+    parse_record_list,
+    parse_record_list_minimal,
+    run_git,
+)
 from skill_evaluate.config import get_settings
 from skill_evaluate.errors import AgentError
 from skill_evaluate.logging import get_logger
@@ -36,7 +45,6 @@ logger = get_logger(component="assertion_toolbox")
 
 MANIFEST_FILENAME = "manifest.yaml"
 TEMPLATES_DIRNAME = "templates"
-UNKNOWN_REF = "unknown"
 
 # 关键词抽取时丢弃的高频无信息词。刻意保持极小：这是一个打分器，不是分词器，
 # 停用词表膨胀反而会让"删除文件"这类真正的动词被误删。
@@ -172,17 +180,10 @@ def parse_manifest(raw: str) -> list[TemplateMetadata]:
     极简解析器——与 `ingestion/skill_loader.py` 解析 frontmatter 的取舍一致：
     为一个固定形状的小文件引入一个运行期依赖不划算，但装了更好。
     """
-    try:  # pragma: no cover - 取决于环境是否装了 PyYAML
-        import yaml
-    except ImportError:
-        records = _parse_manifest_minimal(raw)
-    else:
-        loaded = yaml.safe_load(raw)
-        if loaded is None:
-            records = []
-        elif not isinstance(loaded, list):
-            raise ToolboxError(f"{MANIFEST_FILENAME} 顶层必须是记录列表，实际是 {type(loaded)}")
-        records = [dict(item) for item in loaded]
+    try:
+        records = parse_record_list(raw, source_name=MANIFEST_FILENAME)
+    except RecordListParseError as exc:
+        raise ToolboxError(str(exc)) from exc
 
     return [_to_metadata(record) for record in records]
 
@@ -209,64 +210,11 @@ def _infer_language(template_name: str) -> str:
 
 
 def _parse_manifest_minimal(raw: str) -> list[dict[str, Any]]:
-    """极简 YAML 子集解析：`- key: value` 记录列表，值支持标量、行内列表、块列表。
-
-    靠**缩进**区分"新记录"与"块列表项"：记录的 `- ` 位于最外层缩进（由第一条
-    记录确定），块列表项一定比它更深。不这么做的话，`- template: b` 紧跟在
-    `params:` 的块列表后面时会被误吞成上一条记录的列表项。
-    """
-    records: list[dict[str, Any]] = []
-    current: dict[str, Any] | None = None
-    pending_list_key: str | None = None
-    record_indent: int | None = None
-
-    for line_no, line in enumerate(raw.splitlines(), start=1):
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        indent = len(line) - len(line.lstrip())
-
-        if stripped.startswith("- "):
-            if record_indent is None:
-                record_indent = indent
-            if indent <= record_indent:  # 新记录
-                current = {}
-                records.append(current)
-                pending_list_key = None
-                stripped = stripped[2:].strip()
-                record_indent = indent
-            else:  # 块列表项
-                if current is None or pending_list_key is None:
-                    raise ToolboxError(f"{MANIFEST_FILENAME} 第 {line_no} 行：列表项没有归属的键")
-                current[pending_list_key].append(_scalar(stripped[2:].strip()))
-                continue
-
-        if current is None:
-            raise ToolboxError(f"{MANIFEST_FILENAME} 第 {line_no} 行：记录必须以 `- ` 开头")
-        if ":" not in stripped:
-            raise ToolboxError(f"{MANIFEST_FILENAME} 第 {line_no} 行无法解析：{line!r}")
-
-        key, _, value = stripped.partition(":")
-        key = key.strip()
-        value = value.strip()
-        if not value:  # 块列表的起始行：`keywords:`
-            current[key] = []
-            pending_list_key = key
-        elif value.startswith("[") and value.endswith("]"):
-            current[key] = [_scalar(v) for v in value[1:-1].split(",") if v.strip()]
-            pending_list_key = None
-        else:
-            current[key] = _scalar(value)
-            pending_list_key = None
-
-    return records
-
-
-def _scalar(value: str) -> str:
-    value = value.strip()
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
-        return value[1:-1]
-    return value
+    """极简解析器（实现已移至 `agents/git_repo_cache.py`，供种子锚点库共用）。"""
+    try:
+        return parse_record_list_minimal(raw, source_name=MANIFEST_FILENAME)
+    except RecordListParseError as exc:
+        raise ToolboxError(str(exc)) from exc
 
 
 # --------------------------------------------------------------------------- #
@@ -437,37 +385,11 @@ class AssertionToolbox:
         return True
 
 
-def _git_sync(repo_url: str, ref: str, dest: Path) -> None:
-    if (dest / ".git").is_dir():
-        _run_git(["fetch", "--depth", "1", "origin", ref], cwd=dest)
-        _run_git(["checkout", "--force", "FETCH_HEAD"], cwd=dest)
-        return
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    _run_git(
-        ["clone", "--depth", "1", "--branch", ref, repo_url, str(dest)],
-        cwd=dest.parent,
-    )
-
-
-def _run_git(args: list[str], *, cwd: Path) -> str:
-    completed = subprocess.run(
-        ["git", *args],  # 参数来自配置，非用户输入
-        cwd=str(cwd),
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
-    return completed.stdout.strip()
-
-
-def _git_head_sha(root: Path) -> str:
-    if not (root / ".git").is_dir():
-        return UNKNOWN_REF
-    try:
-        return _run_git(["rev-parse", "HEAD"], cwd=root) or UNKNOWN_REF
-    except (subprocess.SubprocessError, OSError):  # pragma: no cover - 环境无 git
-        return UNKNOWN_REF
+# git 同步三件套已移至 `agents/git_repo_cache.py`（docs/dev/21 种子锚点库复用同一模式），
+# 保留原私有名作为别名，既有调用点与行为不变。
+_git_sync = git_sync
+_run_git = run_git
+_git_head_sha = git_head_sha
 
 
 @lru_cache

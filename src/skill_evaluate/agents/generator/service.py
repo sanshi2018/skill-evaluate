@@ -23,17 +23,36 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from skill_evaluate.agents.generator.agent import GeneratorAgent
+from skill_evaluate.agents.generator.collapse_detector import (
+    CollapseAssessment,
+    CollapseDetector,
+    GenerationCollapseDetector,
+)
 from skill_evaluate.agents.generator.schema import CapabilityFocus, GenerationRequest
-from skill_evaluate.errors import GenerationError
+from skill_evaluate.config import get_settings
+from skill_evaluate.errors import GenerationCollapseError, GenerationError
 from skill_evaluate.logging import get_logger
-from skill_evaluate.persistence.repository import TestCaseRepository, TestSuiteRepository
+from skill_evaluate.observability.alerts import (
+    AlertDispatcher,
+    dispatch_alert,
+    get_alert_dispatcher,
+)
+from skill_evaluate.persistence.repository import (
+    GenerationCollapseEventRepository,
+    TestCaseRepository,
+    TestSuiteRepository,
+)
 from skill_evaluate.state.enums import DatasetSplit, GenerationMode, TestCaseCategory
+from skill_evaluate.state.generator_trust import GenerationCollapseEvent
 from skill_evaluate.state.skill import SkillDefinition
 from skill_evaluate.state.test_case import TestCase, TestSuiteVersion
 
 logger = get_logger(component="test_suite_service")
 
 TRAIN_RATIO = 0.6  # 架构文档：60/40 划分训练集/验证集
+
+# 连续坍塌达到上限时发出的告警类型（docs/dev/22 第 8 节按它走 `INJECT_NEW_SEED` 处理路径）。
+ALERT_TYPE_GENERATION_COLLAPSE = "generation_collapse_persistent"
 
 
 @dataclass(slots=True)
@@ -62,10 +81,20 @@ class TestSuiteService:
         generator: GeneratorAgent | None = None,
         test_suite_repo: TestSuiteRepository | None = None,
         test_case_repo: TestCaseRepository | None = None,
+        collapse_detector: CollapseDetector | None = None,
+        collapse_event_repo: GenerationCollapseEventRepository | None = None,
+        alert_dispatcher: AlertDispatcher | None = None,
     ) -> None:
         self._generator = generator or GeneratorAgent()
         self._suite_repo = test_suite_repo or TestSuiteRepository()
         self._case_repo = test_case_repo or TestCaseRepository()
+        # docs/dev/21：反坍塌检测器与坍塌事件表。默认实现复用本服务的用例仓储做存量回填。
+        self._collapse_detector: CollapseDetector = collapse_detector or (
+            GenerationCollapseDetector(test_case_repository=self._case_repo)
+        )
+        self._collapse_event_repo = collapse_event_repo or GenerationCollapseEventRepository()
+        # None = 每次发送时回落到进程级注册的分发器（docs/dev/22 可以晚于本服务构造再注册）。
+        self._alert_dispatcher = alert_dispatcher
 
     # ------------------------------------------------------------------ #
     # 4.1 REUSE（默认）
@@ -366,17 +395,19 @@ class TestSuiteService:
         generator_run_id = str(uuid.uuid4())
         new_cases = await self._generator.generate(request, generator_run_id=generator_run_id)
 
-        # docs/dev/06 第 7 节的反坍塌校验挂载点。返回 False 时**阻断 activate**，
-        # 而不是"生成了就用"——坍塌的用例集比没有用例集更危险，它会给出一个虚高
-        # 的通过率。
-        if not await _check_generation_collapse(new_cases):
-            raise GenerationError(
-                f"本次生成被判定为语义坍塌（skill_id={request.skill.skill_id}），已阻断激活。"
-            )
+        # docs/dev/21 第 2 节的反坍塌门禁。未通过时**阻断 activate**，而不是"生成了就用"——
+        # 坍塌的用例集比没有用例集更危险，它会给出一个虚高的通过率。
+        assessment = await self._collapse_detector.assess(
+            new_cases, inherited_case_ids=inherited_case_ids
+        )
+        if not assessment.passed:
+            await self._reject_collapsed_batch(request, generator_run_id, assessment)
 
         # 新增用例独立做 60/40 划分，不触碰继承来的用例。
         _split_dataset(new_cases, skill_id=request.skill.skill_id)
         await self._case_repo.save_many(new_cases)
+        # 向量必须在用例落库**之后**写（外键），且只写通过校验的这批（废题不进历史分布）。
+        await self._collapse_detector.persist(assessment)
 
         version = TestSuiteVersion(
             suite_version_id=str(uuid.uuid4()),
@@ -397,8 +428,82 @@ class TestSuiteService:
             triggered_by=request.triggered_by,
             new_case_count=len(new_cases),
             total_case_count=len(version.case_ids),
+            collapse_check=assessment.reason.value,
         )
         return version
+
+    async def _reject_collapsed_batch(
+        self,
+        request: GenerationRequest,
+        generator_run_id: str,
+        assessment: CollapseAssessment,
+    ) -> None:
+        """记录坍塌事件、必要时呼叫人工，然后抛 `GenerationCollapseError`（永不正常返回）。
+
+        连续坍塌次数 = "自当前 active 版本创建以来的坍塌事件数"：成功激活会刷新 active
+        版本的 `created_at`，于是这个数天然就在成功时清零，不需要维护独立计数器。
+
+        告警只在**恰好达到**上限时发一次（`==` 而非 `>=`）：第 4、5 次坍塌时人已经被叫过了，
+        重复轰炸只会让告警被静音；此后每次仍然带着 `requires_human_seed=True` 抛出，由
+        docs/dev/22 决定是否挂起流水线。
+        """
+        skill_id = request.skill.skill_id
+        await self._collapse_event_repo.record(
+            GenerationCollapseEvent(
+                event_id=str(uuid.uuid4()),
+                skill_id=skill_id,
+                generator_run_id=generator_run_id,
+                generation_mode=request.mode.value,
+                triggered_by=request.triggered_by,
+                reason=assessment.reason,
+                avg_distance_to_history=assessment.avg_distance_to_history,
+                intra_batch_distance=assessment.intra_batch_distance,
+                threshold=assessment.threshold,
+                historical_count=assessment.historical_count,
+                new_case_count=assessment.new_case_count,
+                occurred_at=datetime.now(UTC),
+            )
+        )
+        active = await self._suite_repo.get_active_version(skill_id, None)
+        consecutive = await self._collapse_event_repo.count_since(
+            skill_id=skill_id, since=active.created_at if active is not None else None
+        )
+        limit = get_settings().generator_trust.max_consecutive_collapses
+        requires_human_seed = consecutive >= limit
+
+        if consecutive == limit:
+            await dispatch_alert(
+                self._alert_dispatcher or get_alert_dispatcher(),
+                alert_type=ALERT_TYPE_GENERATION_COLLAPSE,
+                # 出题不隶属于某一次流水线运行（CLI 也能触发），用 generator_run_id 作关联键。
+                run_id=generator_run_id,
+                payload={
+                    "skill_id": skill_id,
+                    "skill_version_ref": request.skill.version_ref,
+                    "consecutive_collapses": consecutive,
+                    "max_consecutive_collapses": limit,
+                    "last_reason": assessment.reason.value,
+                    "avg_distance_to_history": assessment.avg_distance_to_history,
+                    "intra_batch_distance": assessment.intra_batch_distance,
+                    "threshold": assessment.threshold,
+                    "triggered_by": request.triggered_by,
+                    "action_required": "请向种子锚点库注入新的真实 Prompt 后再重新生成",
+                },
+            )
+
+        raise GenerationCollapseError(
+            f"本次生成被判定为语义坍塌（skill_id={skill_id}，reason={assessment.reason.value}，"
+            f"历史距离={_fmt(assessment.avg_distance_to_history)}，"
+            f"批内距离={_fmt(assessment.intra_batch_distance)}，"
+            f"阈值={assessment.threshold:.3f}），已阻断激活；连续第 {consecutive} 次坍塌。",
+            skill_id=skill_id,
+            consecutive_collapses=consecutive,
+            requires_human_seed=requires_human_seed,
+        )
+
+
+def _fmt(value: float | None) -> str:
+    return "未计算" if value is None else f"{value:.3f}"
 
 
 # --------------------------------------------------------------------------- #
@@ -431,20 +536,8 @@ def _split_dataset(cases: list[TestCase], *, skill_id: str) -> list[TestCase]:
     return cases
 
 
-async def _check_generation_collapse(new_cases: list[TestCase]) -> bool:
-    """反坍塌校验（**占位实现，恒定放行**）。
-
-    docs/dev/21 接入后：计算 `new_cases` 的 prompt 向量与历史用例库的分布距离，
-    低于阈值判定为生成坍塌，返回 False 并阻断本次生成结果的 activate。依赖
-    docs/dev/23 的 pgvector 检索层。
-
-    保持本函数签名不变，docs/dev/21 只需替换函数体，`_generate_and_activate()`
-    的调用结构不需要改动。
-    """
-    return bool(new_cases)
-
-
 __all__ = [
+    "ALERT_TYPE_GENERATION_COLLAPSE",
     "TRAIN_RATIO",
     "EnsureTestSuiteResult",
     "TestSuiteService",

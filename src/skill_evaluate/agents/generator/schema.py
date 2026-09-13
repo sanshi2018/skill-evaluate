@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field, model_validator
 
+from skill_evaluate.agents.generator.seed_anchors import SeedAnchor
 from skill_evaluate.state.enums import GenerationMode, TestCaseCategory
 from skill_evaluate.state.skill import SkillDefinition
 
@@ -45,7 +46,14 @@ class GenerationRequest(BaseModel):
     positive_count: int = 9  # 架构文档建议 8-10
     negative_count: int = 9
     capability_focus: CapabilityFocus | None = None  # None = 常规发散生成
-    seed_anchor_ids: list[str] | None = None  # docs/dev/21 扩展点，当前仅作 few-shot 注入
+    # docs/dev/21 第 3 节：显式指定要注入的种子锚点 id（`<domain_tag>/<id>`）。
+    # None（默认）= 由 GeneratorAgent 按 skill.description 从种子库自动检索最相关的几条；
+    # 空列表 = 显式不要锚点。docs/dev/06 简化版里"把 id 原文当 few-shot 文本"的语义已废弃
+    # ——库里查不到的 id 会被告警并忽略，而不是把一串 id 塞给模型当示例。
+    seed_anchor_ids: list[str] | None = None
+    # 已解析好的锚点（docs/dev/21 追加）。`GeneratorAgent.generate()` 在出题前一次性填好，
+    # 同一请求的各类别共用同一批锚点；调用方也可以直接传入（测试/离线场景），此时不再检索。
+    seed_anchors: list[SeedAnchor] = Field(default_factory=list)
     triggered_by: str  # "manual_cli" | "auto_bootstrap" | "coverage_gap" | ...
     # 逐类别的数量覆盖（docs/dev/13 追加）。`positive_count`/`negative_count` 是
     # docs/dev/06 定下的字段，不动；新类别的数量由调用方按自己的语义决定——例如
@@ -104,6 +112,10 @@ class GeneratedCase(BaseModel):
     # 事后靠正文相似度去猜，等于把一个确定的事实重新变成一次不可靠的推断。
     # 其余类别的模板不会渲染这个字段，模型不填即为 None。
     probe_target_reference: str | None = None
+    # docs/dev/21：这条用例主要借鉴了哪条真实种子锚点（Prompt 里方括号内的 id）。
+    # 由模型回填、`GeneratorAgent` 与本次注入的锚点核对后写进 `TestCase.seed_anchor_id`；
+    # 没有注入锚点或模型未借鉴时为 None。
+    seed_anchor_id: str | None = None
 
 
 class GeneratedCaseBatch(BaseModel):

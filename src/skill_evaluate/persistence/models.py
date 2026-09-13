@@ -12,6 +12,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
+from pgvector.sqlalchemy import VECTOR
 from sqlalchemy import (
     Boolean,
     DateTime,
@@ -422,3 +423,79 @@ class TestCaseSuggestionORM(Base):
     status: Mapped[str] = mapped_column(String, default="pending", index=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+# --------------------------------------------------------------------------- #
+# docs/dev/21：Generator 可信度（最小向量基础设施 + 坍塌事件）与前置门禁
+# --------------------------------------------------------------------------- #
+
+# `case_embeddings.embedding` 的定长维度。必须与 `GeneratorTrustSettings.embedding_dimensions`
+# 一致（客户端会校验），改维度 = 新 revision 重建列 + 全量重算，不是改一个配置项的事。
+CASE_EMBEDDING_DIMENSIONS = 1536
+
+
+class CaseEmbeddingORM(Base):
+    """测试用例 prompt 的向量（docs/dev/21 第 2.1 节）。
+
+    外键指向 `test_cases`：向量只为**已落库**的用例而存。这条约束直接决定了写入时序——
+    被判定坍塌、未激活的那批用例不落 `test_cases`，也就不会把自己的向量混进"历史分布"，
+    否则下一次生成会拿一批废题当参照系，越比越像。
+
+    docs/dev/23 的 `search_documents` 是独立的姊妹表（带全文检索与元数据的长期记忆库），
+    本表只服务坍塌检测这一类"新旧分布距离"计算。
+    """
+
+    __tablename__ = "case_embeddings"
+
+    case_id: Mapped[str] = mapped_column(
+        String, ForeignKey("test_cases.case_id", ondelete="CASCADE"), primary_key=True
+    )
+    skill_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    embedding: Mapped[list[float]] = mapped_column(
+        VECTOR(CASE_EMBEDDING_DIMENSIONS), nullable=False
+    )
+    # 记录是哪个模型算的：换 embedding 模型后新旧向量不在同一空间，距离毫无意义。
+    # 查询历史时按当前模型过滤，旧模型的向量自然退出参照系（而不是悄悄混算）。
+    embedding_model: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class GenerationCollapseEventORM(Base):
+    """一次被阻断的生成坍塌（docs/dev/21 第 2.2 节）。
+
+    只记坍塌、不记成功：连续坍塌次数 = "自该 Skill 当前 active 用例集版本创建以来的坍塌
+    事件数"。成功激活本身就会刷新 `test_suite_versions.created_at`，不需要再维护一个会与
+    真实激活状态不同步的计数器。
+    """
+
+    __tablename__ = "generation_collapse_events"
+
+    event_id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid_str)
+    skill_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    generator_run_id: Mapped[str] = mapped_column(String, nullable=False)
+    generation_mode: Mapped[str] = mapped_column(String, nullable=False)
+    triggered_by: Mapped[str] = mapped_column(String, nullable=False)
+    reason: Mapped[str] = mapped_column(String, nullable=False)  # CollapseReason 枚举值
+    avg_distance_to_history: Mapped[float | None] = mapped_column(Float, nullable=True)
+    intra_batch_distance: Mapped[float | None] = mapped_column(Float, nullable=True)
+    threshold: Mapped[float] = mapped_column(Float, nullable=False)
+    historical_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    new_case_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class CanaryProbeHistoryORM(Base):
+    """金丝雀探针的执行记录（docs/dev/21 第 6 节）。
+
+    `nightly_or_image_change` 模式据此判断"镜像没变 + 24h 内成功过"即跳过。失败记录同样
+    落库：它们不参与跳过判定，但运维排查"沙箱从什么时候开始坏的"时是第一手线索。
+    """
+
+    __tablename__ = "canary_probe_history"
+
+    probe_id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid_str)
+    run_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    image_ref: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
+    passed: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    reasons: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+    probed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

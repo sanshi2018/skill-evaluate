@@ -18,6 +18,10 @@ class HermesSandboxClient(Protocol):
     async def poll_sandbox(self, sandbox_id: str) -> HermesHookPayload | None: ...
 
     async def is_reachable(self) -> bool: ...
+
+    async def run_environment_probe(
+        self, *, script_content: str, timeout_s: int,
+    ) -> EnvironmentProbeResult: ...     # docs/dev/21 追加，见「追加契约：环境指纹探测」
 ```
 
 默认注入 `UnconfiguredHermesSandboxClient`：`create_sandbox()` 显式抛出
@@ -37,8 +41,9 @@ class HermesSandboxClient(Protocol):
      `X-Hermes-Signature` header，见 `docs/dev/03` 第 4.4 节、`api/security.py`）。
    - `poll_sandbox()`：供"拉取兜底"复用——调用 Hermes 的沙箱查询 API，把响应体
      解析为 `HermesHookPayload`（若沙箱仍在运行返回 `None`）。
-   - `is_reachable()`：供 `HermesBackend.health_check()`（docs/dev/21 金丝雀探针）
-     调用，建议命中 Hermes 的健康检查端点。
+   - `is_reachable()`：供 `HermesBackend.health_check()` 调用，建议命中 Hermes 的健康检查端点。
+     **只做轻量可达性检查**：docs/dev/21 的金丝雀探针在 `executors/canary.py::run_canary_probe()`
+     里先调它、再走一次完整 `create_sandbox()` 执行探针技能，不要把"跑一次任务"塞进这个方法。
 2. 在 `HermesBackend.__init__` 的默认构造处（或 `executors/factory.py`）把
    `UnconfiguredHermesSandboxClient()` 换成新实现的实例。
 3. `scripts/pending_hooks_reaper.py` 中 `reap_once()` 当前对所有超时记录直接
@@ -93,6 +98,32 @@ class HermesSandboxClient(Protocol):
 
 不满足目录约定时不会得出错误结论，但劫持/熔断判定会大量落入"证据不足"。详见
 `docs/dev/interfaces/20_multi_skill_conflict.md` 第 5 节。
+
+## 追加契约：环境指纹探测与金丝雀（docs/dev/21）
+
+`run_environment_probe(script_content, timeout_s) -> EnvironmentProbeResult(exit_code, stdout, stderr)`：
+
+- 在**与评测任务同一基础镜像**的沙箱里用 `sh` 执行 `script_content`（即
+  `nodes/preflight/env_fingerprint_probe.sh` 的正文），**同步返回**，不走 Hook 回调与 `pending_hooks`
+  ——它要在 CLI（无图上下文）与图的最前置节点都能调用。
+- `PreflightSettings.fingerprint_check_mode="hook_parallel"`：请作为沙箱初始化 Hook 的一部分**并行**执行，
+  不为它单独多起一个容器（架构文档控制冷启动耗时的应对方案）。
+- 不注入任何被测 Skill、不注入任何密钥类环境变量；超时返回非零 `exit_code`（建议 124），不要抛异常。
+- 默认 `UnconfiguredHermesSandboxClient.run_environment_probe()` 抛 `ExecutorBackendError`，
+  指纹门禁据此如实失败——同样**不要**伪造一个成功的探测结果。
+
+金丝雀探针走普通 `create_sandbox()`：`request.skill.root_path` 指向包内 `executors/canary_skill/`，
+请按普通 Skill 同一挂载契约把 `data.txt` 挂到 SKILL.md 同目录；`case_id` 形如 `__canary__:<run_id>`。
+
+## 已知问题：`create_sandbox()` 必须按 wait_key 幂等（docs/dev/21 实现时发现）
+
+LangGraph 的 `interrupt()` 被唤醒后会**从头重跑整个节点**，于是 `HermesBackend.execute()` 在
+`suspend_and_wait()` 之前的 `create_sandbox()` 会被再调用一次。真实客户端请以
+`callback_url`（已唯一包含 `run_id/case_id/run_index`）为幂等键：同一键的沙箱已存在或已完成时直接返回
+原 `sandbox_id`，不要再起一个新沙箱。
+
+另：`HermesBackend.execute()` 原先的 `except Exception` 会吞掉 `GraphInterrupt`（挂起信号），
+docs/dev/21 已修正为原样上抛。
 
 ## 不要做的事
 

@@ -31,6 +31,10 @@ from skill_evaluate.agents.generator.schema import (
     GeneratedCaseBatch,
     GenerationRequest,
 )
+from skill_evaluate.agents.generator.seed_anchors import (
+    SeedAnchorSource,
+    get_default_seed_anchor_resolver,
+)
 from skill_evaluate.agents.llm import AgentLLMClient
 from skill_evaluate.agents.templating import build_prompt_env
 from skill_evaluate.config import get_settings
@@ -125,6 +129,7 @@ class GeneratorAgent(BaseLLMAgent):
         llm_client: AgentLLMClient | None = None,
         langfuse_adapter: LangfuseAdapter | None = None,
         trace_handle: LangfuseTraceHandle | None = None,
+        seed_anchor_resolver: SeedAnchorSource | None = None,
     ) -> None:
         # 出题需要发散，温度取高位。注意：新一代 Claude 模型已移除采样参数，
         # 此时该值不会被发送（见 agents/llm.py 的能力门禁），多样性完全由
@@ -138,6 +143,9 @@ class GeneratorAgent(BaseLLMAgent):
             trace_handle=trace_handle,
         )
         self._env = build_prompt_env(_PROMPT_DIR)
+        # docs/dev/21 第 3 节：种子锚点解析器。None = 进程级默认实例（种子库未同步时它直接返回
+        # 空列表、不发任何 embedding 请求，所以单测/离线环境无需关心）。
+        self._seed_resolver = seed_anchor_resolver
 
     async def generate(
         self, request: GenerationRequest, *, generator_run_id: str
@@ -147,6 +155,7 @@ class GeneratorAgent(BaseLLMAgent):
         任一批次失败即整体失败（抛 `GenerationError`），不返回半成品用例集——
         半成品会让下游误以为"这个 Skill 的正向用例天然就只有 3 条"。
         """
+        request = await self._attach_seed_anchors(request)
         cases: list[TestCase] = []
         for category in request.categories:
             count = request.count_for(category)
@@ -210,7 +219,7 @@ class GeneratorAgent(BaseLLMAgent):
                 expected_output=generated.expected_output,
                 target_capability_ids=generated.target_capability_ids,
                 negative_constraint_ids=generated.negative_constraint_ids,
-                seed_anchor_id=None,
+                seed_anchor_id=self._resolve_seed_anchor_ref(generated, request),
                 probe_target_reference=self._resolve_probe_target(
                     generated, template=template, skill=request.skill
                 ),
@@ -263,15 +272,58 @@ class GeneratorAgent(BaseLLMAgent):
             )
         return matched
 
+    async def _attach_seed_anchors(self, request: GenerationRequest) -> GenerationRequest:
+        """出题前一次性解析种子锚点（docs/dev/21 第 3 节），返回填好 `seed_anchors` 的请求副本。
+
+        三种输入：调用方已传 `seed_anchors` → 原样使用；显式 `seed_anchor_ids` → 按 id 精确取；
+        都没有 → 按 description 自动检索 `GeneratorTrustSettings.seed_anchor_count` 条。
+        每个请求只解析一次而不是每个类别各检索一次：同一批题共用同一组锚点，溯源才一致。
+        """
+        if request.seed_anchors:
+            return request
+        resolver: SeedAnchorSource = self._seed_resolver or get_default_seed_anchor_resolver()
+        if request.seed_anchor_ids is not None:
+            anchors = resolver.resolve_ids(request.seed_anchor_ids)
+        else:
+            anchors = await resolver.resolve_for_skill(
+                request.skill, get_settings().generator_trust.seed_anchor_count
+            )
+        if not anchors:
+            return request
+        return request.model_copy(update={"seed_anchors": anchors})
+
     @staticmethod
     def _resolve_seed_texts(request: GenerationRequest) -> list[str]:
-        """把 `seed_anchor_ids` 解析成 few-shot 文本。
+        """把已解析的锚点渲染成 few-shot 文本：`[<anchor_id>] <prompt>`。
 
-        当前为**简化版**（docs/dev/06 第 7 节）：没有版本化的种子库，直接把 id
-        原文当作示例文本注入。docs/dev/21 接入 GitHub 托管的种子锚点配置后替换
-        本方法的实现即可，调用点不变。
+        方括号里的 id 是给模型回填 `seed_anchor_id` 用的（模板 `seed_block` 宏里有说明）。
         """
-        return list(request.seed_anchor_ids or [])
+        return [f"[{anchor.anchor_id}] {anchor.prompt}" for anchor in request.seed_anchors]
+
+    @staticmethod
+    def _resolve_seed_anchor_ref(
+        generated: GeneratedCase, request: GenerationRequest
+    ) -> str | None:
+        """核对模型回填的锚点 id，返回带 commit 的完整引用写进 `TestCase.seed_anchor_id`。
+
+        只认本次**真的注入过**的锚点：模型编造一个看起来合理的 id，写进库就成了一条伪造的
+        溯源记录。对不上时返回 None 并告警，不抛异常（一条题溯源缺失不值得整批作废）。
+        容忍模型把方括号一起抄回来。
+        """
+        raw = (generated.seed_anchor_id or "").strip().strip("[]").strip()
+        if not raw or not request.seed_anchors:
+            return None
+        by_id = {anchor.anchor_id: anchor for anchor in request.seed_anchors}
+        anchor = by_id.get(raw)
+        if anchor is None:
+            logger.warning(
+                "generator_seed_anchor_unknown",
+                skill_id=request.skill.skill_id,
+                seed_anchor_id=raw,
+                injected=sorted(by_id),
+            )
+            return None
+        return anchor.ref
 
 
 def extract_keywords(skill: SkillDefinition, limit: int = 12) -> list[str]:
