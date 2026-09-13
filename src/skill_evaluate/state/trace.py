@@ -76,7 +76,12 @@ RUN_INDEX_MULTI_SKILL_TEMPORAL = 235  # 时序扰动：打乱步骤顺序后的�
 # 评测的 0~2 号冗余执行不冲突；基线与并发仍需各占一个号。
 RUN_INDEX_MULTI_SKILL_CORE_BASELINE = 236  # 核心 Skill 独立执行
 RUN_INDEX_MULTI_SKILL_CORE_CROWDED = 237  # 核心 Skill 以被测 Skill 为背景执行
-# 后续维度从 240 起申领。
+# docs/dev/24：Nightly COLD 用例回归（`graph/cold_suite.py`）。重跑的是模块七降级为
+# `COLD` 的正/反向用例，沿用模块一的冗余执行骨架（240 .. 240+redundant_runs-1，默认 240~242）。
+# 必须与模块一的 0~2 分开：同一条用例若日后被恢复为 TRAIN，模块一按 `run_index < redundant_runs`
+# 统计触发率时不能把 Nightly 那几次执行算进去。
+RUN_INDEX_COLD_SUITE = 240
+# 后续维度从 250 起申领（240~249 已被 docs/dev/24 的 COLD 回归占用）。
 # 模块四（docs/dev/14）**不占号段**：它裸调脚本子进程（`executors/script_sandbox.py`
 # 的 `ScriptSandboxRunner`），一条 `ExecutionTrace` 都不落，与本表无关。登记在这里
 # 是为了让下一个来申领号段的人不必再翻一遍模块四的代码确认这件事。

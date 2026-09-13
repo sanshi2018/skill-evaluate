@@ -1,0 +1,95 @@
+# Nightly COLD 用例回归（docs/dev/17 "仅在周末的 Nightly Build 中运行"；docs/dev/24 第 6 节）。
+#
+# 对 skills/ 下每个 Skill 跑一遍 `internal run-cold-suite`：同一张主图的 cold_suite 模式，先过前置门禁，
+# 再只重跑被模块七降级为 COLD 的正/反向用例。结论维度 `cold_suite_regression` 不阻断任何合并。
+#
+# 金丝雀在 Nightly 一律实跑（interfaces/21 第 3.3 节："Nightly 与 Dockerfile 变更时设 every_run"）。
+# 需要常驻 Postgres：COLD 标签与 active 用例集都在库里，临时数据库里什么都没有。
+name: nightly-cold-suite
+
+on:
+  schedule:
+    - cron: "0 2 * * 0"   # 每周日 02:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      skills: ${{ steps.all.outputs.skills }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -e .
+      - id: all
+        run: |
+          payload=$(skill-evaluate internal changed-skills --all --base HEAD --skills-root skills)
+          echo "skills=$(echo "$payload" | python -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["skills"]))')" >> "$GITHUB_OUTPUT"
+
+  run-cold-cases:
+    needs: resolve
+    if: needs.resolve.outputs.skills != '[]'
+    runs-on: ${{ vars.SKILL_EVALUATE_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 2   # 与白天的 PR 评测共用沙箱集群，夜间也不要一次打满
+      matrix:
+        skill: ${{ fromJSON(needs.resolve.outputs.skills) }}
+    env:
+      SKILLEVAL_DB_HOST: ${{ secrets.SKILLEVAL_DB_HOST }}
+      SKILLEVAL_DB_PORT: ${{ secrets.SKILLEVAL_DB_PORT || '5432' }}
+      SKILLEVAL_DB_USER: ${{ secrets.SKILLEVAL_DB_USER }}
+      SKILLEVAL_DB_PASSWORD: ${{ secrets.SKILLEVAL_DB_PASSWORD }}
+      SKILLEVAL_DB_DATABASE: ${{ secrets.SKILLEVAL_DB_DATABASE || 'skill_evaluate' }}
+      SKILLEVAL_LLM_API_KEY: ${{ secrets.SKILLEVAL_LLM_API_KEY }}
+      SKILLEVAL_EXECUTOR_BACKEND: ${{ vars.SKILLEVAL_EXECUTOR_BACKEND || 'hermes' }}
+      SKILLEVAL_EXECUTOR_HERMES_ENDPOINT: ${{ vars.SKILLEVAL_EXECUTOR_HERMES_ENDPOINT }}
+      SKILLEVAL_EXECUTOR_HERMES_HOOK_SECRET: ${{ secrets.SKILLEVAL_EXECUTOR_HERMES_HOOK_SECRET }}
+      SKILLEVAL_API_INTERNAL_BASE_URL: ${{ vars.SKILLEVAL_API_INTERNAL_BASE_URL || 'http://localhost:8000' }}
+      SKILLEVAL_APPROVAL_DISCORD_WEBHOOK_URL: ${{ secrets.SKILLEVAL_APPROVAL_DISCORD_WEBHOOK_URL }}
+      SKILLEVAL_APPROVAL_WORKBENCH_BASE_URL: ${{ vars.SKILLEVAL_APPROVAL_WORKBENCH_BASE_URL }}
+      SKILLEVAL_PREFLIGHT_SANDBOX_IMAGE_REF: ${{ vars.SKILLEVAL_PREFLIGHT_SANDBOX_IMAGE_REF }}
+      SKILLEVAL_PREFLIGHT_CANARY_CHECK_MODE: every_run
+      SKILLEVAL_PIPELINE_REPORT_DIR: .
+    steps:
+      - name: Require persistent database
+        run: |
+          if [ -z "$SKILLEVAL_DB_HOST" ]; then
+            echo "::error::Nightly COLD 回归需要常驻 Postgres（secrets.SKILLEVAL_DB_HOST）。"
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install -e ".[tokenizer]"
+      - run: skill-evaluate db-init
+      - name: Start hooks / approval API
+        run: |
+          nohup uvicorn skill_evaluate.api.app:app --host 0.0.0.0 --port 8000 > api.log 2>&1 &
+          for i in $(seq 1 60); do
+            curl -fsS http://localhost:8000/healthz && exit 0
+            sleep 2
+          done
+          echo "API 未能启动" && cat api.log && exit 1
+      - name: Run COLD suite regression
+        env:
+          SKILL_PATH: ${{ matrix.skill }}
+        run: skill-evaluate internal run-cold-suite --skill-path "$SKILL_PATH"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cold-suite-report-${{ strategy.job-index }}
+          path: |
+            benchmark.json
+            report.html
+            api.log
+          retention-days: 30
+          if-no-files-found: warn

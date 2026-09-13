@@ -274,6 +274,8 @@ P2 则相反；取中间档错得最不离谱。
 
 ## 6. `24`：主图装配清单
 
+> ✅ **docs/dev/24 已接入**：schema 合并、`recursion_limit`（`SKILLEVAL_PIPELINE_RECURSION_LIMIT`=250）、`coverage_summary` 聚合（`capability_coverage_ratio`）、入口排在 `instruction_control.prepare_cases` 之后。第 2 条 `interrupt_before` 见 `docs/dev/interfaces/24_main_graph_and_ci_cd.md` 第 3 节的修正：主图不加静态中断。
+
 1. **状态 schema**：并入第 2 节的八个私有键。
 2. **`interrupt_before`**：`nodes.coverage.graph.INTERRUPT_BEFORE_NODES`
    （`[coverage.extract_capability_tree]`）。它走的是动态 `interrupt()`，不加也能

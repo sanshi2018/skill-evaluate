@@ -242,6 +242,8 @@ JudgeAgent"。本维度没有这样的结论：
 
 ## 7. `24`：主图装配清单
 
+> ✅ **docs/dev/24 已接入**：第 5 条 COLD Nightly 调度落地为主图 `cold_suite` 模式的 `nightly.cold_suite_regression` 节点 + `.github/workflows/nightly_cold_suite.yml`（号段 `RUN_INDEX_COLD_SUITE=240`，维度 `cold_suite_regression`，不阻断），见 `docs/dev/interfaces/24_main_graph_and_ci_cd.md` 第 6.2 节。
+
 1. **状态 schema**：并入第 2 节的十三个私有键（与模块六的八个一起）。
 2. **`interrupt_before`**：`nodes.pruning.graph.INTERRUPT_BEFORE_NODES` 是
    **空列表**——本维度没有任何挂起点。显式导出而不是干脆不定义，是为了让"这份

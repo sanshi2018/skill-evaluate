@@ -59,6 +59,10 @@ instruction_control.prepare_instruction_control_cases
 
 ### 相对 docs/dev/13 正文的两处结构差异
 
+> ⚠️ **docs/dev/24 实施期修复的缺陷**：三条支路汇入 `collect_findings` 原先是三条独立的 `add_edge`。A/B 支路比另两条多一跳
+> （ab → trace_efficiency），逐条连边会让 `collect_findings`、路由与 `finalize_dimension_report` **各跑两遍**（第一遍写进
+> `dimension_results` 的结论缺效率诊断）。已改为多起点边 `add_edge([三条支路末端], collect_findings)`，三条都完成才触发一次。
+
 1. **多了一个 `collect_findings` 节点**。正文的流程图里没有它。条件路由必须挂在
    某个节点上，而"要不要进优化闭环"需要同时看到 A/B 与探查两条支路的结论；挂在
    其中一条支路上会漏掉另一条的失败信号。它是纯汇总，不发请求、不写库。
@@ -126,6 +130,8 @@ builder = StateGraph(MainGraphState)
 
 ## 3. `24` 的接入点
 
+> ✅ **docs/dev/24 已接入**：入口排在 `security.prepare_adversarial_suite` 与 `trigger_accuracy.judge_train_cases` 两者之后（多起点边），见 `docs/dev/interfaces/24_main_graph_and_ci_cd.md` 第 1 节。
+
 ### 3.1 依赖模块一的测试集（Phase 顺序）
 
 本维度的 A/B 对比复用**模块一已经生成并落库的 POSITIVE 训练集用例**，因此
@@ -137,6 +143,8 @@ builder = StateGraph(MainGraphState)
 把本维度排在 `trigger_accuracy.judge_train_cases` 之后仍然是更稳妥的做法。
 
 ### 3.2 `interrupt_before` 汇总
+
+> ⚠️ **docs/dev/24 实现后的修正**：静态 `interrupt_before` 会让**每次运行**在进入该节点前无条件停下（不写审批卡片、无人唤醒），与这里"不加也能挂起、列出来只为显式"的说法不符。主图编译时 `interrupt_before=[]`，本常量改作 `graph/main.py::SUSPENDABLE_NODES` 的数据源，只表达"可能停在人工审批上"。
 
 > **docs/dev/22 落地后**：人工放弃补丁后抛 `HumanRejectedSuspension`；ROI 共识未达成抛的普通
 > `PipelineSuspended` 由节点级 guard 接成 `ABANDON_RUN` 阻塞审批（retry / abandon），见 `interfaces/22` 第 1 节。

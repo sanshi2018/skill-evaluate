@@ -15,6 +15,8 @@
     .status-needs_human_review { color: #a15c00; font-weight: 600; }
     .blocking-yes { background: #fdecea; }
     ul.findings { margin: 0; padding-left: 1.1rem; }
+    .preflight { background: #eef4fb; border-left: 4px solid #2f6db3; padding: 0.75rem 1rem;
+                 margin-bottom: 1.5rem; font-size: 0.9rem; }
     .staleness { background: #fff8e1; border-left: 4px solid #a15c00; padding: 0.75rem 1rem;
                  margin-bottom: 1.5rem; font-size: 0.9rem; }
   </style>
@@ -30,6 +32,19 @@
       <span class="status-{{ report.overall_status.value }}">{{ report.overall_status.value }}</span>
     </div>
   </div>
+
+  {% if report.preflight_summary %}
+  <div class="preflight">
+    <strong>运行环境证明（前置门禁）：</strong>
+    <ul class="findings">
+      {% for gate, outcome in report.preflight_summary.items() %}
+      <li>{{ gate }}：{{ outcome.get('status', '-') if outcome else '未执行' }}
+        {% if outcome and outcome.get('reasons') %}（{{ outcome.get('reasons') | join('；') }}）{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
 
   {% if report.test_suite_staleness_warning %}
   <div class="staleness">
@@ -85,5 +100,23 @@
       {% endfor %}
     </tbody>
   </table>
+
+  {% if report.pull_request %}
+  <h2>Auto-fix Pull Request</h2>
+  <div class="meta">
+    <div>status: {{ report.pull_request.get('status') }}</div>
+    {% if report.pull_request.get('url') %}<div>url: <a href="{{ report.pull_request.get('url') }}">{{ report.pull_request.get('url') }}</a></div>{% endif %}
+    {% if report.pull_request.get('reason') %}<div>reason: {{ report.pull_request.get('reason') }}</div>{% endif %}
+  </div>
+  {% endif %}
+
+  {% if report.archive_outcome %}
+  <h2>Data Flywheel Archive</h2>
+  <div class="meta">
+    <div>archived: {{ 'yes' if report.archive_outcome.get('archived') else 'no' }}</div>
+    {% if report.archive_outcome.get('reason') %}<div>reason: {{ report.archive_outcome.get('reason') }}</div>{% endif %}
+    {% if report.archive_outcome.get('failed_dimensions') %}<div>failed_dimensions: {{ report.archive_outcome.get('failed_dimensions') | join(', ') }}</div>{% endif %}
+  </div>
+  {% endif %}
 </body>
 </html>

@@ -5,7 +5,10 @@
 内部 API）。`pending_hooks` 与 `human_approvals` 两张表本质上都是
 `wait_key -> resume_payload` 的具体化。
 
-**待接入说明**：`resolve_suspension()` 最终需要调用"已编译主图"的
+**✅ docs/dev/24 已接入**：`graph/resumer.py::CompiledGraphResumer` 由 API 进程 lifespan、
+CLI `run` 与 `internal reap-pending-hooks` 在主图编译后注册。以下为原始待接入说明（保留）：
+
+`resolve_suspension()` 最终需要调用"已编译主图"的
 `graph.invoke(Command(resume=...), config={"configurable": {"thread_id": ...}})`
 来真正唤醒挂起的节点，但"已编译主图"由 docs/dev/24（主图编排与 CI/CD 落地）
 才会产出。这里通过 `GraphResumer` 协议 + `register_graph_resumer()` 注册点
@@ -26,7 +29,17 @@ from skill_evaluate.persistence.repository import HumanApprovalRepository, Pendi
 
 
 class GraphResumer(Protocol):
-    async def resume(self, *, thread_id: str, resume_payload: Any) -> None: ...
+    """唤醒挂起线程的实现（docs/dev/24 落地为 `graph/resumer.py::CompiledGraphResumer`）。
+
+    `wait_key`（docs/dev/24 追加）：主图里多个并行节点会**同时**挂起（例如模块一与模块五
+    各自在等 Hermes 回调），LangGraph 1.x 在存在多个待处理中断时要求按中断 id 指定唤醒
+    哪一个。`suspend_and_wait()` 把 wait_key 写进了中断载荷，实现方据此定位中断 id；
+    只有一个待处理中断时可以忽略它。
+    """
+
+    async def resume(
+        self, *, thread_id: str, resume_payload: Any, wait_key: str | None = None
+    ) -> None: ...
 
 
 _graph_resumer: GraphResumer | None = None
@@ -82,4 +95,4 @@ async def resolve_suspension(wait_key: str, resume_payload: Any, thread_id: str)
         return
 
     resumer = _get_graph_resumer()
-    await resumer.resume(thread_id=thread_id, resume_payload=resume_payload)
+    await resumer.resume(thread_id=thread_id, resume_payload=resume_payload, wait_key=wait_key)

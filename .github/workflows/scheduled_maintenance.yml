@@ -1,0 +1,55 @@
+# pending_hooks 超时巡检（docs/dev/04 第 5 节；docs/dev/24 第 4 节）。
+#
+# 不依赖某次具体运行的图状态，因此是独立定时任务而不是主图节点。巡检唤醒挂起线程时会在本作业里
+# 把流水线继续跑到下一个挂起点（与 API 进程处理回调行为一致），所以超时留得比单个维度的最长耗时宽。
+#
+# ⚠️ 必须连接**常驻** Postgres（secrets.SKILLEVAL_DB_*）：临时服务容器里没有任何 pending_hooks。
+# GitHub 的 schedule 最小粒度 5 分钟，且高峰期可能延迟；需要更及时的兜底时改用常驻 worker
+# 循环调用 `skill_evaluate.persistence.reaper.reap_once`（interfaces/04_pending_hooks_reaper_scheduling.md）。
+name: scheduled-maintenance
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: scheduled-maintenance-reaper
+  cancel-in-progress: false   # 上一轮还在唤醒某条线程时，不要再起一轮去抢同一批记录
+
+jobs:
+  reap-pending-hooks:
+    runs-on: ${{ vars.SKILL_EVALUATE_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 120
+    env:
+      SKILLEVAL_DB_HOST: ${{ secrets.SKILLEVAL_DB_HOST }}
+      SKILLEVAL_DB_PORT: ${{ secrets.SKILLEVAL_DB_PORT || '5432' }}
+      SKILLEVAL_DB_USER: ${{ secrets.SKILLEVAL_DB_USER }}
+      SKILLEVAL_DB_PASSWORD: ${{ secrets.SKILLEVAL_DB_PASSWORD }}
+      SKILLEVAL_DB_DATABASE: ${{ secrets.SKILLEVAL_DB_DATABASE || 'skill_evaluate' }}
+      SKILLEVAL_LLM_API_KEY: ${{ secrets.SKILLEVAL_LLM_API_KEY }}
+      SKILLEVAL_EXECUTOR_BACKEND: ${{ vars.SKILLEVAL_EXECUTOR_BACKEND || 'hermes' }}
+      SKILLEVAL_EXECUTOR_HERMES_ENDPOINT: ${{ vars.SKILLEVAL_EXECUTOR_HERMES_ENDPOINT }}
+      SKILLEVAL_EXECUTOR_HERMES_HOOK_SECRET: ${{ secrets.SKILLEVAL_EXECUTOR_HERMES_HOOK_SECRET }}
+      SKILLEVAL_API_INTERNAL_BASE_URL: ${{ vars.SKILLEVAL_API_INTERNAL_BASE_URL }}
+      SKILLEVAL_APPROVAL_DISCORD_WEBHOOK_URL: ${{ secrets.SKILLEVAL_APPROVAL_DISCORD_WEBHOOK_URL }}
+      SKILLEVAL_APPROVAL_WORKBENCH_BASE_URL: ${{ vars.SKILLEVAL_APPROVAL_WORKBENCH_BASE_URL }}
+    steps:
+      - name: Skip when no persistent database is configured
+        id: guard
+        run: |
+          if [ -z "$SKILLEVAL_DB_HOST" ]; then
+            echo "::notice::未配置 secrets.SKILLEVAL_DB_HOST，跳过巡检（临时数据库里没有需要巡检的记录）。"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.guard.outputs.skip != 'true'
+      - uses: actions/setup-python@v5
+        if: steps.guard.outputs.skip != 'true'
+        with:
+          python-version: "3.13"
+          cache: pip
+      - if: steps.guard.outputs.skip != 'true'
+        run: pip install -e ".[tokenizer]"
+      - if: steps.guard.outputs.skip != 'true'
+        run: skill-evaluate internal reap-pending-hooks

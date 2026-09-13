@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -39,6 +40,17 @@ class BenchmarkReport(BaseModel):
     # 由主图入口节点（docs/dev/24）从 `EnsureTestSuiteResult.staleness_warning`
     # 透传给 `ReportGenerator.build()`。
     test_suite_staleness_warning: str | None = None
+
+    # ---- docs/dev/24 追加（全部可选，旧报告/旧调用方不受影响）----
+    # 报告头部：本次评测是否在被证明可信的环境里运行（docs/dev/21 前置门禁两份证明的摘要，
+    # `{"fingerprint": {...}, "canary": {...}}`）。跳过了哪道证明必须让读报告的人看得见。
+    preflight_summary: dict[str, Any] | None = None
+    # 报告尾部：补丁转 PR 的结果（`{"status": "created"|"skipped"|"failed", "url", "reason",
+    # "patches": [...]}`，见 `graph/patch_pr.py::PullRequestOutcome`）。
+    pull_request: dict[str, Any] | None = None
+    # 报告尾部：数据飞轮归档结果（`memory.rag_archive.ArchiveOutcome` 的 dump）。飞轮长期
+    # `blocking_dimensions_not_passed` 停转时，应当在报告里被看见（interfaces/23 第 3.1 节第 5 条）。
+    archive_outcome: dict[str, Any] | None = None
 
     @property
     def blocking(self) -> bool:

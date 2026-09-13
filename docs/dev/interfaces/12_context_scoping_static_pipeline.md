@@ -102,6 +102,8 @@ builder = StateGraph(MainGraphState)
 
 ## 3. `24` 的接入点（只有三条）
 
+> ✅ **docs/dev/24 已接入**：与模块一/四并列在前置门禁之后直接扇出，见 `docs/dev/interfaces/24_main_graph_and_ci_cd.md` 第 1 节。
+
 1. **前置条件**：进入 `ENTRY_NODE` 之前，被测 Skill 必须已经
    `ingestion.load_skill()` + `SkillRepository.save()` 入库，否则本维度抛
    `PersistenceError`。本维度**不**依赖测试集，因此可以与模块一的

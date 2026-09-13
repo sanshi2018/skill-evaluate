@@ -110,7 +110,11 @@ builder = StateGraph(MainGraphState)
 
 ## 3. `24` 的三个具体接入点
 
+> ✅ **docs/dev/24 已全部接入**（schema 合并、staleness 透传、runs 先于本维度创建、补丁转 PR），见 `docs/dev/interfaces/24_main_graph_and_ci_cd.md`。
+
 ### 3.1 `interrupt_before` 汇总
+
+> ⚠️ **docs/dev/24 实现后的修正**：静态 `interrupt_before` 会让**每次运行**在进入该节点前无条件停下（不写审批卡片、无人唤醒），与这里"不加也能挂起、列出来只为显式"的说法不符。主图编译时 `interrupt_before=[]`，本常量改作 `graph/main.py::SUSPENDABLE_NODES` 的数据源，只表达"可能停在人工审批上"。
 
 ```python
 from skill_evaluate.nodes.trigger_accuracy import INTERRUPT_BEFORE_NODES

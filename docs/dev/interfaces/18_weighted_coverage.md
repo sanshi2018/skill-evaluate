@@ -253,6 +253,8 @@ docs/dev/18 第 7 节的原文约定：本项目只保证 `traceability_matrix.j
 
 ## 8. `24`：主图装配清单
 
+> ✅ **docs/dev/24 已接入**：schema、排序、`coverage_summary`（`weighted_coverage_ratio`；模块七为 `combinatorial_pair_coverage_ratio`）、制品归档（`upload-artifact` 含 `artifacts/**/traceability_matrix.*`），见 `docs/dev/interfaces/24_main_graph_and_ci_cd.md`。
+
 1. **状态 schema**：并入第 2 节的十八个私有键（与模块六的八个、模块七的十三个
    一起）。
 2. **`interrupt_before`**：`nodes.weighted_coverage.graph.INTERRUPT_BEFORE_NODES`

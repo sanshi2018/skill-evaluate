@@ -98,6 +98,8 @@ class MainGraphState(
 
 ## 3. `24` 的接入点
 
+> ✅ **docs/dev/24 已接入**：入口排在 `trigger_accuracy.prepare_test_suite` 之后（改用例集的准备节点串行化，避免与模块一同时出题），补丁转 PR 按安全补丁优先合入，见 `docs/dev/interfaces/24_main_graph_and_ci_cd.md` 第 1、6.1 节。
+
 ### 3.1 没有前置依赖（可以排在最前面）
 
 本维度**不复用模块一的用例集**：对抗用例由 Attacker Agent 自己按 REUSE 语义准备
@@ -110,6 +112,8 @@ active 用例集里还没有正/反向用例，回归会判 `passed=False` 并�
 把安全维度排在模块一之后能避免这种情形，但不是硬性要求。
 
 ### 3.2 `interrupt_before` 汇总
+
+> ⚠️ **docs/dev/24 实现后的修正**：静态 `interrupt_before` 会让**每次运行**在进入该节点前无条件停下（不写审批卡片、无人唤醒），与这里"不加也能挂起、列出来只为显式"的说法不符。主图编译时 `interrupt_before=[]`，本常量改作 `graph/main.py::SUSPENDABLE_NODES` 的数据源，只表达"可能停在人工审批上"。
 
 ```python
 from skill_evaluate.nodes.security import INTERRUPT_BEFORE_NODES

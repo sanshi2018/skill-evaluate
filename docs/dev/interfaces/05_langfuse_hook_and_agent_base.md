@@ -23,6 +23,8 @@ langfuse_adapter.log_agent_call(
 )
 ```
 
+> ✅ **docs/dev/24**：主图入口节点 `pipeline.bootstrap_run` 已调用 `start_run_trace(run_id, skill_id)` 建立顶层 trace；trace_handle **尚未**注入各 Agent（需要改十个维度的 Deps，列为可选增强，见 `docs/dev/interfaces/24_main_graph_and_ci_cd.md` 第 10 节）。
+
 `trace_handle` 由流水线入口（docs/dev/24 或更早的运行入口）通过
 `LangfuseAdapter().start_run_trace(run_id, skill_id)` 产出一次，随
 `PipelineState` 或依赖注入容器传递给各 Agent，不建议塞进

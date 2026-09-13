@@ -286,18 +286,37 @@ def _sync_skill_md(root: Path, skill: SkillDefinition) -> None:
     if not skill_md.is_file():
         return
     raw = skill_md.read_text(encoding="utf-8")
+    skill_md.write_text(
+        render_skill_md(raw, description=skill.description, body=skill.body_markdown),
+        encoding="utf-8",
+    )
+
+
+def render_skill_md(raw: str, *, description: str | None, body: str | None) -> str:
+    """把新的 description / 正文写回一份 SKILL.md 原文，返回新文本（纯函数）。
+
+    从 `_sync_skill_md()` 提取出来（docs/dev/24 追加）：补丁转 PR（`graph/patch_pr.py`）要把
+    内存里的工作副本还原成**真实文件内容**提交到仓库，必须与回归测试时写进工作副本的口径
+    逐字一致——两处各写一份替换逻辑，PR 里的 SKILL.md 就可能与被验证过的那份不同。
+
+    保留原 frontmatter 的其余键（`name` 等）：只替换 description 的值和正文。
+    传 `None` 表示该部分**保持原文逐字不变**（docs/dev/24 追加）：PR 只改了正文时，不应该顺手把
+    frontmatter 里带引号/折行的 description 改写成解析后的形态，那会在 diff 里凭空多出一处改动。
+    """
     match = _FRONTMATTER_RE.match(raw)
     if match is None:
-        skill_md.write_text(skill.body_markdown, encoding="utf-8")
-        return
+        return raw if body is None else body
 
     frontmatter = raw[: match.end()]
+    new_body = raw[match.end() :] if body is None else body
+    if description is None:
+        return frontmatter + new_body
     patched_frontmatter, count = _DESCRIPTION_LINE_RE.subn(
-        lambda m: f"{m.group('prefix')}{skill.description}", frontmatter, count=1
+        lambda m: f"{m.group('prefix')}{description}", frontmatter, count=1
     )
     if count == 0:
         patched_frontmatter = frontmatter
-    skill_md.write_text(patched_frontmatter + skill.body_markdown, encoding="utf-8")
+    return patched_frontmatter + new_body
 
 
 def cleanup_working_copy(skill: SkillDefinition) -> None:
@@ -319,5 +338,6 @@ __all__ = [
     "apply_unified_diff",
     "cleanup_working_copy",
     "ensure_working_copy",
+    "render_skill_md",
     "working_version_ref",
 ]

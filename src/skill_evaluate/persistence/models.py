@@ -235,6 +235,10 @@ class RunORM(Base):
     suite_version_id: Mapped[str | None] = mapped_column(String, nullable=True)
     generation_mode: Mapped[str] = mapped_column(String, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # docs/dev/24 第 5 节：本次运行自动提交的修复 PR 链接（迁移 0012，纯追加 nullable）。
+    # 放在 runs 而不是 patches 上：一个 PR 可能叠加模块一/三/五的多份补丁，它是"一次运行"
+    # 的交付物；工作台与报告按 run_id 反查即可。
+    pr_url: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class DimensionResultORM(Base):

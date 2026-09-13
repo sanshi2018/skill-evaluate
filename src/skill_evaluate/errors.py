@@ -99,6 +99,15 @@ class InfrastructureEnvironmentError(PipelineSuspended):
         self.details = list(details or [])
 
 
+class DeliveryError(SkillEvaluateError):
+    """评测结论的**交付**动作失败：补丁转分支 / 推送 / 创建 PR（docs/dev/24 第 5 节）。
+
+    单独成类而不是复用 `ExecutorBackendError`：它发生在全部维度结论落库之后，语义是
+    "报告已出、候选修复没能提交"，收尾节点据此记为 PR 失败而不是让整条流水线失败——
+    一次 `gh` 鉴权过期不应该把一份已经算完的报告变成一次失败的评测。
+    """
+
+
 class PersistenceError(SkillEvaluateError):
     """持久化层读写失败（见 docs/dev/04）。"""
 

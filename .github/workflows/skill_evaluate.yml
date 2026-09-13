@@ -1,0 +1,213 @@
+# Skill 评测主流程（docs/dev/24 第 6 节）。
+#
+# 执行模型（详见 src/skill_evaluate/graph/runner.py 模块头）：
+#   1. resolve 作业解析本次 PR 改动了哪些 Skill（`internal changed-skills`），以及基础镜像是否变更；
+#   2. evaluate 作业对每个 Skill 起一个矩阵任务：拉起 API 进程（承接 Hermes Hook 回调与审批决策，
+#      lifespan 里装配主图并注册 GraphResumer），再用 `skill-evaluate run` 发起评测并等待跑完；
+#   3. 无论成败都归档 benchmark.json / report.html / 可追溯性矩阵。
+#
+# `skill-evaluate run` 退出码：0 通过 / 1 阻断 / 2 评测系统故障 / 3 仍挂起在人工审批或回调上 /
+# 4 被人工放弃或前置门禁拒绝。3 不代表 Skill 有问题：去审查工作台处理卡片后，用
+# workflow_dispatch 带 run_id 重新观察即可（同一 run_id 不会重跑已完成的部分）。
+name: skill-evaluate
+
+on:
+  pull_request:
+    paths:
+      - "skills/**/SKILL.md"
+      - "skills/**/scripts/**"
+      - "skills/**/references/**"
+      # 基础镜像 / 黄金指纹变更同样要跑：金丝雀与指纹门禁必须在新镜像上重新证明一次。
+      - "**/Dockerfile"
+      - "golden_fingerprint.json"
+  workflow_dispatch:
+    inputs:
+      skill_path:
+        description: "要评测的 Skill 目录（留空 = skills/ 下全部）"
+        type: string
+        required: false
+      force_regenerate:
+        description: "强制重新出题（旧用例集保留为历史；只有人能触发）"
+        type: boolean
+        default: false
+      run_id:
+        description: "续跑/重新观察某次已发起的评测（留空 = 新开一次）"
+        type: string
+        required: false
+
+permissions:
+  contents: write        # 推送自动修复分支（finalize.patch_pr）
+  pull-requests: write   # 创建自动修复 PR（不会自动合并）
+
+# 同一分支上的评测不并发、也不中途取消：取消会留下挂起的线程与 pending_hooks 记录。
+concurrency:
+  group: skill-evaluate-${{ github.head_ref || github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.13"
+  SKILLS_ROOT: skills
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      skills: ${{ steps.changed.outputs.skills }}
+      base_image_changed: ${{ steps.changed.outputs.base_image_changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # 三点 diff 需要合并基线
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install -e .
+      - name: Resolve changed skills
+        id: changed
+        env:
+          INPUT_SKILL_PATH: ${{ inputs.skill_path }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ -n "$INPUT_SKILL_PATH" ]; then
+              payload=$(python -c 'import json,os; print(json.dumps({"skills": [os.environ["INPUT_SKILL_PATH"]], "base_image_changed": False}))')
+            else
+              payload=$(skill-evaluate internal changed-skills --all --base HEAD --skills-root "$SKILLS_ROOT")
+            fi
+          else
+            payload=$(skill-evaluate internal changed-skills --base "$BASE_SHA" --head "$HEAD_SHA" --skills-root "$SKILLS_ROOT")
+          fi
+          echo "$payload"
+          echo "skills=$(echo "$payload" | python -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["skills"]))')" >> "$GITHUB_OUTPUT"
+          echo "base_image_changed=$(echo "$payload" | python -c 'import json,sys; print(str(json.load(sys.stdin)["base_image_changed"]).lower())')" >> "$GITHUB_OUTPUT"
+
+  evaluate:
+    needs: resolve
+    if: needs.resolve.outputs.skills != '[]'
+    # 真实沙箱回调需要能从 Hermes 访问到本作业里的 API 进程：生产部署建议自托管 runner
+    # （vars.SKILL_EVALUATE_RUNNER），并把可达地址配进 vars.SKILLEVAL_API_INTERNAL_BASE_URL。
+    runs-on: ${{ vars.SKILL_EVALUATE_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        skill: ${{ fromJSON(needs.resolve.outputs.skills) }}
+    services:
+      # 未配置外部数据库（secrets.SKILLEVAL_DB_HOST）时使用临时库：评测照常能跑，但用例集复用、
+      # Judge 健康记录、数据飞轮与跨作业的审批唤醒都不会跨运行保留。生产环境应指向常驻 Postgres。
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: skill_evaluate
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: skill_evaluate
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U skill_evaluate"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      SKILLEVAL_DB_HOST: ${{ secrets.SKILLEVAL_DB_HOST || 'localhost' }}
+      SKILLEVAL_DB_PORT: ${{ secrets.SKILLEVAL_DB_PORT || '5432' }}
+      SKILLEVAL_DB_USER: ${{ secrets.SKILLEVAL_DB_USER || 'skill_evaluate' }}
+      SKILLEVAL_DB_PASSWORD: ${{ secrets.SKILLEVAL_DB_PASSWORD || 'ci' }}
+      SKILLEVAL_DB_DATABASE: ${{ secrets.SKILLEVAL_DB_DATABASE || 'skill_evaluate' }}
+      SKILLEVAL_LLM_API_KEY: ${{ secrets.SKILLEVAL_LLM_API_KEY }}
+      SKILLEVAL_EXECUTOR_BACKEND: ${{ vars.SKILLEVAL_EXECUTOR_BACKEND || 'hermes' }}
+      SKILLEVAL_EXECUTOR_HERMES_ENDPOINT: ${{ vars.SKILLEVAL_EXECUTOR_HERMES_ENDPOINT }}
+      SKILLEVAL_EXECUTOR_HERMES_HOOK_SECRET: ${{ secrets.SKILLEVAL_EXECUTOR_HERMES_HOOK_SECRET }}
+      SKILLEVAL_EXECUTOR_LLAMA_CONTROL_ENDPOINT: ${{ vars.SKILLEVAL_EXECUTOR_LLAMA_CONTROL_ENDPOINT }}
+      SKILLEVAL_EXECUTOR_LLAMA_CONTROL_API_KEY: ${{ secrets.SKILLEVAL_EXECUTOR_LLAMA_CONTROL_API_KEY }}
+      SKILLEVAL_EXECUTOR_LLAMA_CONTROL_HOOK_SECRET: ${{ secrets.SKILLEVAL_EXECUTOR_LLAMA_CONTROL_HOOK_SECRET }}
+      SKILLEVAL_API_INTERNAL_BASE_URL: ${{ vars.SKILLEVAL_API_INTERNAL_BASE_URL || 'http://localhost:8000' }}
+      SKILLEVAL_LANGFUSE_ENABLED: ${{ vars.SKILLEVAL_LANGFUSE_ENABLED || 'false' }}
+      SKILLEVAL_LANGFUSE_PUBLIC_KEY: ${{ secrets.SKILLEVAL_LANGFUSE_PUBLIC_KEY }}
+      SKILLEVAL_LANGFUSE_SECRET_KEY: ${{ secrets.SKILLEVAL_LANGFUSE_SECRET_KEY }}
+      SKILLEVAL_APPROVAL_DISCORD_WEBHOOK_URL: ${{ secrets.SKILLEVAL_APPROVAL_DISCORD_WEBHOOK_URL }}
+      SKILLEVAL_APPROVAL_HMAC_SECRET: ${{ secrets.SKILLEVAL_APPROVAL_HMAC_SECRET }}
+      SKILLEVAL_APPROVAL_WORKBENCH_BASE_URL: ${{ vars.SKILLEVAL_APPROVAL_WORKBENCH_BASE_URL }}
+      SKILLEVAL_VALIDATOR_TOOLBOX_REPO_URL: ${{ vars.SKILLEVAL_VALIDATOR_TOOLBOX_REPO_URL }}
+      SKILLEVAL_GENERATOR_TRUST_SEED_REPO_URL: ${{ vars.SKILLEVAL_GENERATOR_TRUST_SEED_REPO_URL }}
+      # 基础镜像 digest（interfaces/21 第 3.3 节）：未注入时"镜像是否变更"回落为按指纹摘要判断。
+      SKILLEVAL_PREFLIGHT_SANDBOX_IMAGE_REF: ${{ vars.SKILLEVAL_PREFLIGHT_SANDBOX_IMAGE_REF }}
+      # 补丁转 PR：PR 事件里以作者分支为目标，自动修复以"对作者分支的建议 PR"出现，而不是直指主干。
+      SKILLEVAL_PIPELINE_PATCH_PR_ENABLED: "true"
+      SKILLEVAL_PIPELINE_PATCH_PR_BASE_BRANCH: ${{ github.head_ref }}
+      SKILLEVAL_PIPELINE_REPORT_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      SKILLEVAL_PIPELINE_REPORT_DIR: .
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 自动修复分支从 skill_version_ref（该目录最后一次提交）拉出，需要完整历史。
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Cache reranker weights
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-reranker-${{ runner.os }}
+      - run: pip install -e ".[tokenizer,langfuse,reranker]"
+
+      # 迁移到 head（含 0011 search_documents、0012 runs.pr_url）+ checkpoint 表。
+      - run: skill-evaluate db-init
+
+      # 外部仓库同步 + 记忆库索引（interfaces/23 第 3.2 节）。未配置仓库时命令以 0 退出并提示。
+      - run: skill-evaluate sync-toolbox
+      - run: skill-evaluate sync-seed-anchors
+
+      # 基础镜像变更时强制金丝雀实跑（docs/dev/24 第 6 节；判定见 graph/ci_support.py::touches_base_image）。
+      - name: Force canary probe if base image changed
+        if: needs.resolve.outputs.base_image_changed == 'true'
+        run: echo "SKILLEVAL_PREFLIGHT_CANARY_CHECK_MODE=every_run" >> "$GITHUB_ENV"
+
+      - name: Configure git identity for auto-fix commits
+        run: |
+          git config --global user.name "skill-evaluate-bot"
+          git config --global user.email "skill-evaluate-bot@users.noreply.github.com"
+
+      - name: Start hooks / approval API
+        run: |
+          nohup uvicorn skill_evaluate.api.app:app --host 0.0.0.0 --port 8000 > api.log 2>&1 &
+          for i in $(seq 1 60); do
+            curl -fsS http://localhost:8000/healthz && exit 0
+            sleep 2
+          done
+          echo "API 未能启动" && cat api.log && exit 1
+
+      - name: Run evaluation pipeline
+        id: run
+        env:
+          SKILL_PATH: ${{ matrix.skill }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          args=(--skill-path "$SKILL_PATH")
+          if [ "${{ inputs.force_regenerate }}" = "true" ]; then args+=(--force-regenerate); fi
+          if [ -n "$RUN_ID" ]; then args+=(--run-id "$RUN_ID"); fi
+          set +e
+          skill-evaluate run "${args[@]}"
+          code=$?
+          set -e
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          case "$code" in
+            3) echo "::warning::流水线仍挂起在人工审批或 Hook 回调上，请前往审查工作台处理后带 run_id 重新触发。" ;;
+            4) echo "::error::流水线被人工放弃或前置门禁拒绝（与 Skill 质量无关时请联系运维）。" ;;
+          esac
+          exit $code
+
+      - name: Upload benchmark report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchmark-report-${{ strategy.job-index }}
+          path: |
+            benchmark.json
+            report.html
+            artifacts/**/traceability_matrix.*
+            api.log
+          retention-days: 90
+          if-no-files-found: warn

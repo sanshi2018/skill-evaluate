@@ -215,7 +215,7 @@ git diff golden_fingerprint.json   # 人工审核后提交；本仓库当前**�
 | 真实告警通道 | ✅ `22` 已实现（Discord，CLI `generate` / `generate-attacks` 入口已注册） | `22` | `set_alert_dispatcher(...)`，按 `alert_type="generation_collapse_persistent"` 选卡片 |
 | `case_embeddings` 近邻检索 | HNSW 索引已建，**仍未使用**（`23` 评估后未接：当前没有跨 Skill 近邻的调用方，记忆检索走独立的 `search_documents`） | 按需 | 同表 `embedding <=> :q` |
 | 种子锚点混合检索 | ✅ `23` 已实现（混合检索优先，回落单一 embedding） | `23` | 见 `interfaces/23` 第 2 节 |
-| 主图 Phase 0 | 平铺入口就位 | `24` | 第 0、3.1 节 |
+| 主图 Phase 0 | ✅ `24` 已接入：`pipeline.bootstrap_run`（创建 runs 记录）→ 两道门禁 → 维度扇出；报告头部 `preflight_summary`；CI 注入镜像 digest、镜像变更与 Nightly 设 `every_run` | `24` | 第 0、3.1 节 |
 | `run_environment_probe()` 真实实现 | 协议 + Unconfigured 显式报错 | 真实 Hermes 接入 | `interfaces/03` 「追加契约：环境指纹探测」 |
 | 黄金指纹文件 | 未生成 | 运维侧 | 第 3.5 节 |
 | 种子库仓库 | 结构约定已定义 | 运维侧 | 第 2.1 节 |

@@ -31,12 +31,93 @@ def _configure_notifications() -> None:
 
 
 @app.command()
-def run(skill_path: str, force_regenerate: bool = False) -> None:
-    """对指定 SKILL.md 运行完整评测流水线（graph/ 由 docs/dev/24 接入）。"""
-    raise NotImplementedError(
-        "主图尚未装配：由 docs/dev/24（主图编排与 CI/CD 落地）接入，"
-        f"届时将读取 {skill_path!r}（force_regenerate={force_regenerate}）并调用编译后的图。"
+def run(
+    skill_path: str = typer.Option(..., "--skill-path", help="SKILL.md 文件或其所在目录"),
+    force_regenerate: bool = typer.Option(
+        False,
+        "--force-regenerate",
+        help="评测前强制全量重新出题（旧版本保留为历史）。只有人能触发；CI 默认路径不带它。",
+    ),
+    run_id: str | None = typer.Option(
+        None,
+        "--run-id",
+        help="指定 run_id。线程已存在时从断点续跑/重新观察，而不是新开一次评测。",
+    ),
+    wait_timeout: int | None = typer.Option(
+        None,
+        "--wait-timeout",
+        help="挂起后等待其他进程（API 进程的 GraphResumer）继续跑完的秒数；0 = 不等。"
+        "默认取 SKILLEVAL_PIPELINE_WAIT_TIMEOUT_S。",
+    ),
+    report_dir: str | None = typer.Option(
+        None, "--report-dir", help="benchmark.json / report.html 输出目录（默认取配置）"
+    ),
+) -> None:
+    """对指定 Skill 运行完整评测流水线（docs/dev/24）。
+
+    退出码：0 通过 / 1 有阻断项 / 2 评测系统自身错误 / 3 等待超时（仍挂起在回调或审批上）/
+    4 流水线被停下（人工放弃或基础设施不可信）。详见 `graph/runner.py` 模块头。
+    """
+    _run_pipeline_command(
+        skill_path,
+        mode="full",
+        force_regenerate=force_regenerate,
+        run_id=run_id,
+        wait_timeout=wait_timeout,
+        report_dir=report_dir,
     )
+
+
+def _run_pipeline_command(
+    skill_path: str,
+    *,
+    mode: str,
+    force_regenerate: bool,
+    run_id: str | None,
+    wait_timeout: int | None,
+    report_dir: str | None,
+) -> None:
+    """`run` 与 `internal run-cold-suite` 共用：装配主图、发起运行、打印结论、按结论退出。"""
+    configure_logging()
+    # docs/dev/22 第 2 节第 7 条：图执行进程也要注册通知通道，否则挂起时的 Discord 卡片只写日志。
+    _configure_notifications()
+
+    from skill_evaluate.errors import SkillEvaluateError
+    from skill_evaluate.graph.runner import EXIT_SYSTEM_ERROR, run_pipeline
+
+    try:
+        outcome = asyncio.run(
+            run_pipeline(
+                skill_path,
+                mode=mode,  # type: ignore[arg-type]
+                force_regenerate=force_regenerate,
+                run_id=run_id,
+                wait_timeout_s=wait_timeout,
+                report_dir=report_dir,
+            )
+        )
+    except SkillEvaluateError as exc:
+        typer.secho(f"评测系统错误（与 Skill 质量无关）：{exc}", fg=typer.colors.RED)
+        raise typer.Exit(code=EXIT_SYSTEM_ERROR) from exc
+
+    typer.echo(f"run_id={outcome.run_id} thread_id={outcome.thread_id} status={outcome.status}")
+    if outcome.status == "completed":
+        from skill_evaluate.graph.state import KEY_PULL_REQUEST, KEY_REPORT_OVERALL_STATUS
+
+        typer.echo(f"overall_status={outcome.values.get(KEY_REPORT_OVERALL_STATUS)} blocking={outcome.blocking}")
+        pull_request = outcome.values.get(KEY_PULL_REQUEST) or {}
+        if pull_request.get("url"):
+            typer.echo(f"auto-fix PR: {pull_request['url']}")
+    elif outcome.status == "suspended":
+        typer.secho(
+            "流水线仍挂起，等待以下外部事件（审查工作台 / Hook 回调）："
+            + ", ".join(outcome.pending_wait_keys or ["<无中断载荷>"]),
+            fg=typer.colors.YELLOW,
+        )
+        typer.echo(f"处理完后可用 `skill-evaluate run --skill-path {skill_path} --run-id {outcome.run_id}` 继续观察。")
+    else:
+        typer.secho(f"流水线已停下：{outcome.stop_reason}", fg=typer.colors.RED)
+    raise typer.Exit(code=outcome.exit_code())
 
 
 @app.command()
@@ -474,6 +555,124 @@ def db_init() -> None:
     logger.info("db_init_checkpointer_ready")
 
     logger.info("db_init_complete")
+
+
+# --------------------------------------------------------------------------- #
+# docs/dev/24：运维巡检与 CI 专用子命令（`skill-evaluate internal ...`）
+# --------------------------------------------------------------------------- #
+
+internal_app = typer.Typer(
+    name="internal",
+    help="运维巡检与 CI 专用子命令（定时任务 / workflow 调用，不面向日常使用）。",
+)
+app.add_typer(internal_app, name="internal")
+
+
+@internal_app.command("reap-pending-hooks")
+def internal_reap_pending_hooks(
+    older_than: int | None = typer.Option(
+        None,
+        "--older-than",
+        help="waiting 超过多少秒视为超时（默认取 SKILLEVAL_EXECUTOR_SANDBOX_WALL_CLOCK_TIMEOUT_S）",
+    ),
+) -> None:
+    """巡检超时未回调的 pending_hooks 并以保守失败态唤醒（docs/dev/04 第 5 节，每 5 分钟一次）。
+
+    不依赖某次具体运行的图状态，因此是独立定时任务而不是主图节点（docs/dev/24 第 4 节）。
+    """
+    configure_logging()
+    _configure_notifications()
+
+    from skill_evaluate.config import get_settings
+    from skill_evaluate.graph.runner import reap_pending_hooks_with_graph
+
+    threshold = older_than if older_than is not None else get_settings().executor.sandbox_wall_clock_timeout_s
+    count = asyncio.run(reap_pending_hooks_with_graph(threshold))
+    typer.echo(f"reaped={count}")
+
+
+@internal_app.command("judge-health-check")
+def internal_judge_health_check(
+    window_size: int = typer.Option(50, "--window-size", help="黄金基准滑动窗口大小"),
+) -> None:
+    """检查默认 Judge 配置的黄金基准失误率（docs/dev/08 第 3.3 节 `check_judge_health()`，每 6 小时一次）。
+
+    超阈值时 `JudgeHealthMonitor` 会冻结该配置并经告警通道发 `judge_frozen`；本命令以退出码 1 让定时
+    作业显示为失败，值班的人在 Actions 页面也能看见。
+    """
+    configure_logging()
+    _configure_notifications()
+
+    from skill_evaluate.agents.judge.health import check_judge_health
+
+    healthy = asyncio.run(check_judge_health(window_size=window_size))
+    typer.echo(f"judge_healthy={healthy}")
+    if not healthy:
+        raise typer.Exit(code=1)
+
+
+@internal_app.command("run-cold-suite")
+def internal_run_cold_suite(
+    skill_path: str = typer.Option(..., "--skill-path", help="SKILL.md 文件或其所在目录"),
+    wait_timeout: int | None = typer.Option(None, "--wait-timeout"),
+    report_dir: str | None = typer.Option(None, "--report-dir"),
+) -> None:
+    """Nightly：只重跑被模块七降级为 COLD 的用例（docs/dev/24 第 6 节；interfaces/17 第 7 节第 5 条）。
+
+    与 `run` 共用同一张主图（`_pipeline_mode=cold_suite`），同样先过前置门禁。结论维度
+    `cold_suite_regression` 不阻断合并，因此退出码只在评测系统故障 / 被停下 / 等待超时时非 0。
+    """
+    _run_pipeline_command(
+        skill_path,
+        mode="cold_suite",
+        force_regenerate=False,
+        run_id=None,
+        wait_timeout=wait_timeout,
+        report_dir=report_dir,
+    )
+
+
+@internal_app.command("changed-skills")
+def internal_changed_skills(
+    base: str = typer.Option(..., "--base", help="对比基线（PR 的 base sha）"),
+    head: str = typer.Option("HEAD", "--head", help="对比终点（PR 的 head sha）"),
+    skills_root: str = typer.Option("skills", "--skills-root", help="Skill 目录根（相对仓库根）"),
+    all_skills: bool = typer.Option(False, "--all", help="忽略 diff，列出全部 Skill（Nightly 用）"),
+) -> None:
+    """输出 JSON：`{"skills": [...], "base_image_changed": bool}`，供 workflow 写进步骤输出。
+
+    不加载任何 LLM/数据库依赖，可以在安装完包的最早一步运行。
+    """
+    import json
+    import subprocess
+
+    from skill_evaluate.graph.ci_support import (
+        list_all_skills,
+        resolve_changed_skills,
+        touches_base_image,
+    )
+
+    repo_root = Path.cwd()
+    if all_skills:
+        typer.echo(json.dumps({"skills": list_all_skills(repo_root=repo_root, skills_root=skills_root), "base_image_changed": False}))
+        return
+    # 三点 diff：只看 head 相对合并基线的改动，base 分支上别人后来合入的提交不算本 PR 的改动。
+    result = subprocess.run(  # 固定参数列表，无 shell
+        ["git", "diff", "--name-only", f"{base}...{head}"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        typer.secho(f"git diff 失败：{result.stderr.strip()}", fg=typer.colors.RED)
+        raise typer.Exit(code=2)
+    files = result.stdout.splitlines()
+    payload = {
+        "skills": resolve_changed_skills(files, repo_root=repo_root, skills_root=skills_root),
+        "base_image_changed": touches_base_image(files),
+    }
+    typer.echo(json.dumps(payload))
 
 
 if __name__ == "__main__":

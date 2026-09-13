@@ -93,6 +93,8 @@ multi_skill.finalize_dimension_report                    （TERMINAL_NODE）
 
 ## 3. `24`：排序与前置依赖
 
+> ✅ **docs/dev/24 已接入**：入口排在 `coverage.finalize_weighted_coverage_report` 之后，`TERMINAL_NODE`（深度冲突闸门）进入 `finalize.report` 的同步屏障，见 `docs/dev/interfaces/24_main_graph_and_ci_cd.md` 第 1 节。
+
 - **排在模块八（`coverage.finalize_weighted_coverage_report`）之后**：注意力衰减读
   `CapabilityTree.negative_constraints[*].covering_case_ids`。顺序反了**不报错**——能力树缺失 →
   `skipped`；约束尚未映射 → "没有探针用例" `skipped`，维度被迫 `NEEDS_HUMAN_REVIEW`。
@@ -232,7 +234,7 @@ SKILLEVAL_MULTISKILL_CORE_SKILL_IDS='["sql-runner","git-helper","doc-writer","cs
 | 位置 | 修改 |
 |---|---|
 | `config.py` | 新增 `MultiSkillSettings`，挂 `Settings.multi_skill` |
-| `state/trace.py` | 申领 run_index 230~237；后续维度从 **240** 起申领 |
+| `state/trace.py` | 申领 run_index 230~237；后续维度从 **240** 起申领（`24` 已占 240~249，现从 **250** 起） |
 | `persistence/repository.py` | `SkillRepository.get_latest(skill_id)` |
 | `agents/generator/schema.py` / `agent.py` / `service.py` | `GenerationRequest.background_skills`；`ensure_test_suite(background_skills=...)` 透传；模板渲染变量 `background_skills` |
 | `agents/generator/prompts/registry.py` | 内置注册 `MULTI_SKILL → multi_skill.jinja` |
@@ -252,7 +254,7 @@ SKILLEVAL_MULTISKILL_CORE_SKILL_IDS='["sql-runner","git-helper","doc-writer","cs
 | 真实告警通道 | ✅ `22` 已实现（Discord） | `22` | 第 4 节 |
 | 阻塞式人工介入（基石熔断） | ✅ `22` 已实现：`deep_conflict_approval_gate` | `22` / `24` | 第 4 节开头说明；`24` 并入两个新私有键 |
 | 工作台双路 Trace 比对 | ✅ `22` 已实现：context API 的 `trace_comparisons` | `22` | 第 4.4 节 |
-| 主图装配 | 平铺入口就位 | `24` | 第 0~3 节 |
+| 主图装配 | ✅ `24` 已接入 | `24` | 第 0~3 节 |
 | Hermes 多技能挂载 | 契约已登记 | 真实 Hermes 接入 | 第 5 节 |
 | 跨技能状态突变侦测（环境变量 / 共用中间文件被覆写） | **未实现**（`21` 已落地但未覆盖：沙箱指纹只证明起跑时环境一致，见 `interfaces/21` 第 5 节） | 后续 | 需要沙箱在步骤间隙上报文件 Hash 与环境变量快照（`HermesHookPayload` 追加字段），现有 Trace 只有最终 `fs_diff`，无从判定"是谁在何时改的" |
 | 注意力衰减 → Optimizer 精简 / 强制渐进式披露 | **未实现**（只告警） | 视团队策略 | 可复用模块三的渐进式披露建议；本维度不产生补丁 |

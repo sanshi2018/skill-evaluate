@@ -11,8 +11,8 @@
 你是高级ai agent应用开发工程师，根据项目文档完成具体的代码编写
 其中C:\Users\Administrator\PycharmProjects\skill-evaluate\docs\_5_关键架构.md 架构设计总文档。
 C:\Users\Administrator\PycharmProjects\skill-evaluate\docs\dev 内的md文件为具体的开发文档。
-其中\docs\dev 中的文档0-22已经开发完毕
-请接着实现文档23
+其中\docs\dev 中的文档0-23已经开发完毕
+请接着实现文档24
 
 注意！  
 你产出的代码中关键方法，关键字段都应该有合适的注释，标明这段代码到底是做什么，为什么这样做.

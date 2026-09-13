@@ -691,6 +691,54 @@ class ApprovalSettings(BaseSettings):
     max_approval_rounds_per_node: int = 3
 
 
+class PipelineSettings(BaseSettings):
+    """主图编排、运行入口与 CI/CD 落地（docs/dev/24，追加式扩展）。
+
+    这里的开关只影响"整条流水线怎么被跑起来、跑完之后怎么交付"，**不**影响任何维度的判定
+    口径——判定阈值属于各维度自己的 Settings，不应该因为 CI 想早点结束而在这里被放宽。
+    """
+
+    model_config = SettingsConfigDict(env_prefix="SKILLEVAL_PIPELINE_")
+
+    # benchmark.json / report.html 的输出目录（相对 CWD）。默认仓库根目录：GitHub Actions 的
+    # `upload-artifact` 按 `benchmark.json` / `report.html` 固定路径归档（docs/dev/24 第 6 节）。
+    report_dir: str = "."
+    # LangGraph 单次 `ainvoke` 的超步上限。主图把十个维度串起来，最长路径（前置门禁 →
+    # 模块一准备 → 模块五准备 → 模块三准备 → 模块六带环子图 → 七 → 八 → 十 → 收尾）约 45 步，
+    # 另有模块六补盲回环的放大；LangGraph 默认 25 必然不够（interfaces/16 第 6 节）。
+    recursion_limit: int = Field(default=250, ge=25)
+    # `run` 命令遇到挂起（等 Hook 回调 / 等人工审批）后，轮询 checkpoint 等待流水线在
+    # **其他进程**（API 进程的 GraphResumer）里继续跑完的最长时间。0 = 不等，立即以
+    # "已挂起"退出码结束（适合把审批留到第二天的场景）。
+    wait_timeout_s: int = Field(default=6 * 3600, ge=0)
+    poll_interval_s: float = Field(default=15.0, gt=0)
+    # API 进程启动时是否装配主图并注册 GraphResumer（interfaces/04、22）。只有在 API 进程
+    # 确实不承担唤醒职责的部署（例如另起专门的 resume worker）里才关掉；关掉后审批决策 API
+    # 对阻塞卡片返回 503，Hermes Hook 返回 500——都是显式失败，不会静默丢唤醒。
+    register_resumer_in_api: bool = True
+    # 唤醒是否投递到后台任务。默认 False：保持 docs/dev/22 第 4.3 节"唤醒在请求内同步执行、
+    # 图报错返回 500"的契约。评测耗时超过网关超时的部署改为 True（错误改为只进日志）。
+    resume_in_background: bool = False
+
+    # ---- 补丁转 PR（docs/dev/24 第 5 节）----
+    # 默认关闭：本地跑评测不应该往远程仓库推分支。CI 显式设为 true。
+    patch_pr_enabled: bool = False
+    git_binary: str = "git"
+    gh_binary: str = "gh"
+    patch_pr_remote: str = "origin"
+    # PR 的目标分支。留空 = 交给 `gh pr create` 用仓库默认分支；CI 在 PR 事件里应注入
+    # `github.head_ref`，让自动修复以"对作者分支的建议 PR"形式出现，而不是直接指向主干。
+    patch_pr_base_branch: str = ""
+    # 自动修复分支的前缀；完整分支名 `<prefix>/<skill_id>/<run_id 前 8 位>`。
+    patch_pr_branch_prefix: str = "skill-evaluate/auto-fix"
+    patch_pr_commit_author_name: str = "skill-evaluate-bot"
+    patch_pr_commit_author_email: str = "skill-evaluate-bot@users.noreply.github.com"
+    # PR 正文里 benchmark 报告的链接（CI 注入 Actions 运行页 URL）。留空则只写本地路径。
+    report_url: str = ""
+    # 单条 git / gh 命令的超时。push 与 PR 创建走网络，过短会把一次慢网络误报成失败。
+    git_command_timeout_s: float = Field(default=120.0, gt=0)
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -720,6 +768,7 @@ class Settings(BaseSettings):
     langfuse: LangfuseSettings = Field(default_factory=LangfuseSettings)
     api: ApiSettings = Field(default_factory=ApiSettings)
     approval: ApprovalSettings = Field(default_factory=ApprovalSettings)
+    pipeline: PipelineSettings = Field(default_factory=PipelineSettings)
 
 
 @lru_cache

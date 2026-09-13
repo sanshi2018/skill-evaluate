@@ -70,6 +70,8 @@ docs/dev/21 的 `generation_collapse_persistent` 告警卡片。只有**冒出�
 
 ## 2. `24`：主图装配清单
 
+> ✅ **docs/dev/24 已全部接入**（第 1~9 条），第 9 条的后台唤醒为可选开关 `SKILLEVAL_PIPELINE_RESUME_IN_BACKGROUND`，见 `docs/dev/interfaces/24_main_graph_and_ci_cd.md` 第 5 节。
+
 1. **套 guard**：所有维度节点经 `ApprovalGuardedBuilder(builder)` 添加（第 0 节）。不套的后果：
    `JudgeFrozenError` / 共识未达成直接让 `ainvoke` 抛异常结束，工作台上**没有卡片**，人不知道要处理什么。
    子图作为单个 Runnable 加入主图时 guard 不生效（异常发生在子图内部节点），请平铺装配。
@@ -242,9 +244,9 @@ body 同 4.3；`X-Approval-Signature: hex(HMAC-SHA256(secret, raw_body))`。定�
 
 | 预留位置 | 当前状态 | 由谁接入 | 接入方式 |
 |---|---|---|---|
-| 主图套 guard / 注册 resumer / 合并 schema | 构件就位 | `24` | 第 2 节 |
-| 图执行进程注册通知通道 | API 进程已注册 | `24` | CLI `run` 入口调用 `configure_notification_channels()` |
-| 长耗时唤醒改后台执行 | 请求内同步 | `24` | 替换 `CompiledGraphResumer.resume()` 实现 |
+| 主图套 guard / 注册 resumer / 合并 schema | ✅ `24` 已接入 | `24` | 第 2 节 |
+| 图执行进程注册通知通道 | ✅ `24` 已接入（CLI `run` / `run-cold-suite` / 巡检子命令） | `24` | — |
+| 长耗时唤醒改后台执行 | ✅ `24` 已提供开关（默认仍请求内同步） | `24` | `SKILLEVAL_PIPELINE_RESUME_IN_BACKGROUND=true` |
 | 审查工作台前端 | 明确排除在本仓库之外 | 前端/运维 | 第 4 节 |
 | 用户鉴权 / 权限 | 明确排除 | 运维（SSO/网关） | — |
 | Discord 按钮式快捷审批 | 未实现（判定决策应在工作台完成） | 视产品需求 | 扩展 Discord Interaction 回调后调用 `ApprovalDecisionHandler.decide_approval()`，不改第 4.3 节契约 |

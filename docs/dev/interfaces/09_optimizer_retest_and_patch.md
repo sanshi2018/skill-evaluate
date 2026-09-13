@@ -199,6 +199,11 @@ cleanup_working_copy(working_skill)   # 只删带 .skilleval-working-copy 标记
 
 ## 7. `24`：补丁转正式提交，以及编译期中断
 
+> ✅ **docs/dev/24 已接入**（`graph/patch_pr.py`）。两处修正：① **不能**对仓库文件直接 `git apply patch.diff`——description /
+> 正文补丁 diff 的是字符串字段，且闭环逐轮叠加、最终补丁的基线是上一轮工作副本；实现从图状态里的工作副本还原文件内容，
+> 多份补丁先确认可叠加；人工 adopt 的（`regression_passed≠True`）同样纳入并在 PR 正文标注。② 不要把节点加进静态
+> `interrupt_before`（会让每次运行都停下），见 `docs/dev/interfaces/24_main_graph_and_ci_cd.md` 第 3 节。
+
 - 本层只做"评测沙箱内的临时应用与验证"，**不碰代码仓库**。把
   `regression_passed=True` 的 `Patch` 变成 git commit / PR（`gh` CLI 或 Git API）
   是 `24` 的活。需要的信息都在 `patches` 表：`target_path` + `diff` 可以直接

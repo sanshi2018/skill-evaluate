@@ -264,7 +264,7 @@ evidence.behaved_as_expected                                 # True / False / No
 | `RUN_INDEX_XMODEL_GATE_BASELINE` | 210 | 共识门控：补丁前基线（备用代理） |
 | `RUN_INDEX_XMODEL_GATE_CANDIDATE` | 220 | 共识门控：候选补丁（备用代理，每轮复用） |
 
-后续维度从 230 起申领（`20` 已申领 230~237，再往后从 240 起）。
+后续维度从 230 起申领（`20` 已申领 230~237，`24` 的 Nightly COLD 回归已申领 240~249，再往后从 250 起）。
 
 ---
 
@@ -321,6 +321,6 @@ SKILLEVAL_CROSS_MODEL_CONSENSUS_TOLERANCE=0.05
 | 门控打回原因回灌 Optimizer | 未做 | `22` 或 docs/dev/09 修订 | 见第 4 节已知限制 1 |
 | `llama_control` callback 模式的拉取兜底 | 未做 | 与 Hermes 同步接入 | `pending_hooks` 加 `task_id` 列，reaper 先 `get_task()` 再退化失败态 |
 | `LlamaControlBackend.health_check()` 金丝雀消费 | 接口就位 | `21` / `24` | 预检节点调用；不可用时本维度会自行跳过异构矩阵，不必阻断整条流水线 |
-| 主图装配 | 平铺入口就位 | `24` | 第 0、2 节；本维度依赖 `active_suite_version_id`，排在模块一之后 |
+| 主图装配 | ✅ `24` 已接入：入口排在 `trigger_accuracy.finalize_dimension_report` 之后 | `24` | 第 0、2 节 |
 | 词典维护 | 初版词典 | 运维持续补充（不产生新文档） | `agents/analyzer/ablation_lexicon.py::LEXICON` |
 | 验证集不足时定向补题（`triggered_by="cross_model_sampling"`） | **决定不启用** | — | 非阻断维度不应拥有改变用例集的权力；空抽样如实报告 |

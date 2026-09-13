@@ -58,7 +58,7 @@ hits[0].score_breakdown   # dense_similarity / lexical_rank / rrf_score / rerank
 |---|---|---|---|
 | `assertion_templates` | `sync-toolbox` / `memory-index` | `AssertionToolbox._semantic_lookup()` | 与工具箱仓库全量同步 |
 | `seed_anchors` | `sync-seed-anchors` / `memory-index` | `SeedAnchorResolver.resolve_for_skill()` | 与种子库全量同步 |
-| `successful_skill_archive` | `archive_successful_run()`（**待 24 调用**） | `GeneratorAgent` 冷启动 | 只增不删 |
+| `successful_skill_archive` | `archive_successful_run()`（`24` 的 `finalize.rag_archive` 调用） | `GeneratorAgent` 冷启动 | 只增不删 |
 | `optimizer_patch_history` | `OptimizationLoop.run()` 结束时 | `OptimizerAgent.propose_patch()` | 只增不删 |
 
 `sync_collection()` 对两个只增不删的集合直接抛 `ValueError`，防止误删历史。
@@ -123,6 +123,8 @@ hits[0].score_breakdown   # dense_similarity / lexical_rank / rrf_score / rerank
 ---
 
 ## 3. `24` 要做的事
+
+> ✅ **docs/dev/24 已接入**：收尾节点名为 `finalize.rag_archive`（不是 `rag_archive_if_passed`），排在 `finalize.report` / `finalize.patch_pr` 之后；基础设施故障不让流水线失败，`ArchiveOutcome` 写进状态并补写进报告尾部（`archive_outcome`）；CI 已执行 `db-init`（到 0012）与 `sync-toolbox` / `sync-seed-anchors`，见 `docs/dev/interfaces/24_main_graph_and_ci_cd.md`。
 
 ### 3.1 收尾节点 `rag_archive_if_passed`
 
@@ -216,8 +218,8 @@ embedding 模型与维度复用 `GeneratorTrustSettings.embedding_model / embedd
 
 | 预留位置 | 当前状态 | 由谁接入 | 接入方式 |
 |---|---|---|---|
-| `archive_successful_run()` 调用点 | 函数已实现，**调用点未接入** | `24` | 第 3.1 节 |
-| CI 迁移 0011 与索引步骤 | 命令已就绪 | `24` | 第 3.2 节 |
+| `archive_successful_run()` 调用点 | ✅ `24` 已接入（`finalize.rag_archive`） | `24` | 第 3.1 节 |
+| CI 迁移 0011 与索引步骤 | ✅ `24` 已接入（`skill_evaluate.yml`） | `24` | 第 3.2 节 |
 | Reranker 权重版本锁定 | 默认多语言 MiniLM | 运维 | 改 `SKILLEVAL_MEMORY_RERANKER_MODEL` |
 | 分块参数调优 | 默认 800 token | 运维 | `SKILLEVAL_MEMORY_CHUNK_MAX_TOKENS` |
 | 归档集合换 embedding 模型后的重算脚本 | 未实现 | 按需 | 第 5 节 |

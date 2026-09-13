@@ -1,5 +1,10 @@
 # 接入文档：GraphResumer（唤醒挂起的主图节点）
 
+> ✅ **docs/dev/24 已接入**：`src/skill_evaluate/graph/resumer.py::CompiledGraphResumer`，由 API 进程 lifespan、CLI `run` /
+> `internal run-cold-suite`、`internal reap-pending-hooks` 在主图编译后注册。相对下文示例的增强：`GraphResumer.resume()`
+> 追加可选参数 `wait_key`（`resolve_suspension()` 已传入），据此在多个并行中断里按中断 id 精确唤醒；同一 thread 进程内串行；
+> 可选后台执行（`SKILLEVAL_PIPELINE_RESUME_IN_BACKGROUND`）。checkpointer 必须用 `build_async_checkpointer()`。详见 `docs/dev/interfaces/24_main_graph_and_ci_cd.md` 第 5 节。
+
 > 由谁接入：docs/dev/24（主图编排与 CI/CD 落地），主图 `compile()` 完成后。
 > 当前状态：`persistence/suspension.py` 已实现完整的挂起-唤醒记账逻辑
 > （`pending_hooks`/`human_approvals` 状态迁移），唯独"真正调用已编译主图的

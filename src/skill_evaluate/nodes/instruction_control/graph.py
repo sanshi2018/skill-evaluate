@@ -89,10 +89,19 @@ def add_instruction_control_nodes(
     )
 
     # 汇合：三条支路的末端都指向 collect_findings。
-    builder.add_edge(NODE_NAMES["trace_efficiency_diagnosis"], NODE_NAMES["collect_findings"])
-    builder.add_edge(NODE_NAMES["control_calibration_static_scan"], NODE_NAMES["collect_findings"])
+    #
+    # ⚠️ docs/dev/24 装配主图时修正：必须用**多起点边**（同步屏障）。A/B 支路比另两条多一跳
+    # （ab → trace_efficiency），逐条 `add_edge` 的话，标定与探查在第 N 超步完成时就触发一次
+    # collect_findings，效率诊断在第 N+1 超步完成时再触发一次——汇总、路由与收尾节点都会跑两遍，
+    # 第一遍收尾写进 `dimension_results` 的是缺了效率诊断的结论，主图的报告汇合点若恰好在两遍之间
+    # 触发，报告里就是那份残缺结论。多起点边保证三条支路全部完成后只触发一次。
     builder.add_edge(
-        NODE_NAMES["progressive_disclosure_dynamic_probe"], NODE_NAMES["collect_findings"]
+        [
+            NODE_NAMES["trace_efficiency_diagnosis"],
+            NODE_NAMES["control_calibration_static_scan"],
+            NODE_NAMES["progressive_disclosure_dynamic_probe"],
+        ],
+        NODE_NAMES["collect_findings"],
     )
 
     builder.add_conditional_edges(

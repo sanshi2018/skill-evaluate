@@ -1,5 +1,9 @@
 # 接入文档：pending_hooks_reaper 的调度接入
 
+> ✅ **docs/dev/24 已接入**（选了"GitHub Actions 定时 job"）：`.github/workflows/scheduled_maintenance.yml` 每 5 分钟执行
+> `skill-evaluate internal reap-pending-hooks`（先装配主图并注册 GraphResumer）。`reap_once` 已移到
+> `skill_evaluate.persistence.reaper`，脚本保留为薄包装。需要更及时的兜底时仍可用常驻 worker 循环调用 `reap_once`。
+
 > 由谁接入：docs/dev/24（CI/CD 落地）。
 > 当前状态：`scripts/pending_hooks_reaper.py` 可手动运行（`python
 > scripts/pending_hooks_reaper.py --older-than 60`），逻辑完整（扫描

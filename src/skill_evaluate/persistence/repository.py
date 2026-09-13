@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 from sqlalchemy import delete, desc, func, literal_column, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -765,6 +765,8 @@ class RunInfo(TypedDict):
     suite_version_id: str | None
     generation_mode: str
     created_at: datetime
+    # docs/dev/24 追加：NotRequired——既有调用方/测试替身构造的 RunInfo 不带它也合法。
+    pr_url: NotRequired[str | None]
 
 
 class RunRepository:
@@ -817,7 +819,20 @@ class RunRepository:
                 "suite_version_id": row.suite_version_id,
                 "generation_mode": row.generation_mode,
                 "created_at": row.created_at,
+                "pr_url": row.pr_url,
             }
+
+    async def record_pr_url(self, run_id: str, pr_url: str) -> None:
+        """记录本次运行自动创建的修复 PR（docs/dev/24 第 5 节 `record_pr_url`）。
+
+        幂等覆盖写：收尾节点断点恢复后重跑时会复用同一个 PR（按分支名查到已有 PR），写入的
+        仍是同一个 URL。
+        """
+        async with new_session() as session:
+            await session.execute(
+                update(RunORM).where(RunORM.run_id == run_id).values(pr_url=pr_url)
+            )
+            await session.commit()
 
 
 class DimensionResultRepository:

@@ -1,0 +1,45 @@
+# Judge 黄金基准健康巡检（docs/dev/08 第 3.3 节 `check_judge_health()`；docs/dev/24 第 4 节）。
+#
+# docs/dev/24 正文把它与 reaper 写在同一个 workflow 里、靠 `github.event.schedule` 区分频率，并注明
+# "实际实现可拆分为独立 workflow 文件"——这里按拆分实现：两个任务的频率、超时、失败含义都不同，
+# 放在一起会让"reaper 每 5 分钟跑一次"的作业列表里夹杂着每 6 小时一次的 Judge 结论，难以追溯。
+#
+# 超阈值时 JudgeHealthMonitor 冻结该配置并发 `judge_frozen` 告警（Discord），本作业以退出码 1 显示失败。
+name: judge-health-check
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  judge-health-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SKILLEVAL_DB_HOST: ${{ secrets.SKILLEVAL_DB_HOST }}
+      SKILLEVAL_DB_PORT: ${{ secrets.SKILLEVAL_DB_PORT || '5432' }}
+      SKILLEVAL_DB_USER: ${{ secrets.SKILLEVAL_DB_USER }}
+      SKILLEVAL_DB_PASSWORD: ${{ secrets.SKILLEVAL_DB_PASSWORD }}
+      SKILLEVAL_DB_DATABASE: ${{ secrets.SKILLEVAL_DB_DATABASE || 'skill_evaluate' }}
+      SKILLEVAL_APPROVAL_DISCORD_WEBHOOK_URL: ${{ secrets.SKILLEVAL_APPROVAL_DISCORD_WEBHOOK_URL }}
+      SKILLEVAL_APPROVAL_WORKBENCH_BASE_URL: ${{ vars.SKILLEVAL_APPROVAL_WORKBENCH_BASE_URL }}
+    steps:
+      - name: Skip when no persistent database is configured
+        id: guard
+        run: |
+          if [ -z "$SKILLEVAL_DB_HOST" ]; then
+            echo "::notice::未配置 secrets.SKILLEVAL_DB_HOST，跳过 Judge 健康巡检。"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.guard.outputs.skip != 'true'
+      - uses: actions/setup-python@v5
+        if: steps.guard.outputs.skip != 'true'
+        with:
+          python-version: "3.13"
+          cache: pip
+      - if: steps.guard.outputs.skip != 'true'
+        run: pip install -e .
+      - if: steps.guard.outputs.skip != 'true'
+        run: skill-evaluate internal judge-health-check
