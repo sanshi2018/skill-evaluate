@@ -19,6 +19,7 @@ import re
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Protocol
 
 from skill_evaluate.agents.base import BaseLLMAgent
 from skill_evaluate.agents.generator.prompts.registry import (
@@ -42,11 +43,24 @@ from skill_evaluate.errors import AgentResponseFormatError, GenerationError
 from skill_evaluate.logging import get_logger
 from skill_evaluate.observability.langfuse_adapter import LangfuseAdapter, LangfuseTraceHandle
 from skill_evaluate.observability.log_sanitize import sanitize_for_log
-from skill_evaluate.state.enums import DatasetSplit, TestCaseCategory
+from skill_evaluate.state.enums import DatasetSplit, GenerationMode, TestCaseCategory
+from skill_evaluate.state.memory import ArchivedExample
 from skill_evaluate.state.skill import SkillDefinition
 from skill_evaluate.state.test_case import TestCase
 
 _PROMPT_DIR = Path(__file__).parent / "prompts"
+
+# 冷启动范本只注入这两类出题（docs/dev/23 第 3.3 节）：范本里归档的是"通过评测的正/反向用例
+# 设计模式"，对探查题、多技能复合题、对抗题没有对应的示范价值。
+_COLD_START_CATEGORIES = frozenset({TestCaseCategory.POSITIVE, TestCaseCategory.NEGATIVE})
+
+
+class ColdStartRetriever(Protocol):
+    """冷启动范本检索的最小协议（`memory.rag_archive.RagArchive` 实现它；测试注入替身）。"""
+
+    async def retrieve_few_shot_examples_for_cold_start(
+        self, new_skill: SkillDefinition, count: int | None = None
+    ) -> list[ArchivedExample]: ...
 
 _SYSTEM_PROMPT = (
     "你是一位资深的 Agent Skill 测试设计者。你的产出会直接作为 CI/CD 流水线的"
@@ -130,6 +144,7 @@ class GeneratorAgent(BaseLLMAgent):
         langfuse_adapter: LangfuseAdapter | None = None,
         trace_handle: LangfuseTraceHandle | None = None,
         seed_anchor_resolver: SeedAnchorSource | None = None,
+        cold_start_retriever: ColdStartRetriever | None = None,
     ) -> None:
         # 出题需要发散，温度取高位。注意：新一代 Claude 模型已移除采样参数，
         # 此时该值不会被发送（见 agents/llm.py 的能力门禁），多样性完全由
@@ -146,6 +161,9 @@ class GeneratorAgent(BaseLLMAgent):
         # docs/dev/21 第 3 节：种子锚点解析器。None = 进程级默认实例（种子库未同步时它直接返回
         # 空列表、不发任何 embedding 请求，所以单测/离线环境无需关心）。
         self._seed_resolver = seed_anchor_resolver
+        # docs/dev/23 第 3.3 节：冷启动范本检索。None = 按 `SKILLEVAL_MEMORY_ENABLED` 决定是否使用
+        # 进程级默认 `RagArchive`（关闭时不检索、不访问数据库）；显式注入则总是使用。
+        self._cold_start_retriever = cold_start_retriever
 
     async def generate(
         self, request: GenerationRequest, *, generator_run_id: str
@@ -156,6 +174,7 @@ class GeneratorAgent(BaseLLMAgent):
         半成品会让下游误以为"这个 Skill 的正向用例天然就只有 3 条"。
         """
         request = await self._attach_seed_anchors(request)
+        request = await self._attach_archived_examples(request)
         cases: list[TestCase] = []
         for category in request.categories:
             count = request.count_for(category)
@@ -197,6 +216,9 @@ class GeneratorAgent(BaseLLMAgent):
             reference_files=request.skill.reference_files,
             # 多技能复合用例模板（docs/dev/20）需要干扰包里各 Skill 的描述；理由同上，统一传。
             background_skills=request.background_skills,
+            # docs/dev/23：冷启动历史范本 + 当前类别（模板按类别从范本里挑同类用例）。
+            archived_examples=request.archived_examples or [],
+            category=category.value,
         )
 
         try:
@@ -291,6 +313,49 @@ class GeneratorAgent(BaseLLMAgent):
         if not anchors:
             return request
         return request.model_copy(update={"seed_anchors": anchors})
+
+    async def _attach_archived_examples(self, request: GenerationRequest) -> GenerationRequest:
+        """冷启动时检索历史成功范本（docs/dev/23 第 3.3 节），返回填好 `archived_examples` 的副本。
+
+        只在"常规发散出题"时检索：`INCREMENTAL_PATCH` 与带 `capability_focus` 的补盲出题目标极其
+        具体（补某个能力盲区），塞进几份别的 Skill 的整套用例只会稀释定向约束。是否"从未成功评测过"
+        由检索器判定（该 Skill 已有归档即返回空）。
+
+        检索失败**不阻断出题**：范本是增强手段，数据库/embedding 故障时按"没有范本"继续。
+        """
+        if request.archived_examples is not None:
+            return request
+        if (
+            request.mode is GenerationMode.INCREMENTAL_PATCH
+            or request.capability_focus is not None
+            or not _COLD_START_CATEGORIES.intersection(request.categories)
+        ):
+            return request
+        retriever = self._cold_start_retriever
+        if retriever is None:
+            if not get_settings().memory.enabled:
+                return request
+            # 延迟导入：rag_archive 依赖持久化层，只做出题单测的环境不必加载。
+            from skill_evaluate.memory.rag_archive import get_default_rag_archive
+
+            retriever = get_default_rag_archive()
+        try:
+            examples = await retriever.retrieve_few_shot_examples_for_cold_start(request.skill)
+        except Exception as exc:  # noqa: BLE001 - 增强手段：记忆库故障不得阻断出题
+            logger.warning(
+                "generator_cold_start_retrieval_failed",
+                skill_id=request.skill.skill_id,
+                error=str(exc)[:300],
+            )
+            return request
+        if not examples:
+            return request
+        logger.info(
+            "generator_cold_start_examples_attached",
+            skill_id=request.skill.skill_id,
+            archive_keys=[example.archive_key for example in examples],
+        )
+        return request.model_copy(update={"archived_examples": examples})
 
     @staticmethod
     def _resolve_seed_texts(request: GenerationRequest) -> list[str]:

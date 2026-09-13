@@ -199,6 +199,10 @@ assertion_toolbox/templates/html_no_xss_validator.py
 
 ## 5. `23` 要替换的：`_semantic_lookup()`
 
+> ✅ **`23` 已落地**：混合检索（`collection="assertion_templates"`）与关键词分数取 max，记忆库故障回落纯关键词；
+> 索引由 `sync-toolbox`（同步后自动）/ `memory-index` 写入。`AssertionToolbox` 新增可选参数 `search_service`。
+> 详见 `docs/dev/interfaces/23_memory_and_data_flywheel.md` 第 2 节。下面是原始约定，保留备查。
+
 ```python
 # src/skill_evaluate/agents/validator/toolbox.py
 async def _semantic_lookup(self, query: str) -> list[TemplateMatch]:

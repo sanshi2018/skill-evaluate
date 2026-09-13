@@ -122,6 +122,9 @@ class GenerationCollapseError(GenerationError):
 
 ### 2.3 `23` 的升级点
 
+> ✅ **`23` 已落地**：`resolve_for_skill` 先走混合检索（按当前本地库 commit 过滤），零命中或故障回落下述原实现；
+> `sync-seed-anchors` 同步后自动把锚点索引进 `search_documents(collection="seed_anchors")`。
+
 `SeedAnchorResolver.resolve_for_skill(skill, count) -> list[SeedAnchor]` 就是正文的
 `_resolve_seed_anchors`，**签名即契约**：`23` 只替换函数体为 `hybrid_search.search(..., collection="seed_anchors")`。
 注意：锚点**不在** `case_embeddings` 里（该表 `case_id` 外键指向 `test_cases`），当前实现是进程内按
@@ -210,8 +213,8 @@ git diff golden_fingerprint.json   # 人工审核后提交；本仓库当前**�
 |---|---|---|---|
 | 连续坍塌 → 阻塞审批 | ✅ `22` 已实现：节点级 guard 接成 `INJECT_NEW_SEED` 审批（仅冒出节点的坍塌；四处自行接住 `GenerationError` 的补题路径不升级，见 `interfaces/22` 第 1.1 节） | `22` | 在调用 `TestSuiteService` 的节点里按子类捕获，`request_human_approval(decision_type=INJECT_NEW_SEED)`；人工注入种子后 `sync-seed-anchors` 再恢复 |
 | 真实告警通道 | ✅ `22` 已实现（Discord，CLI `generate` / `generate-attacks` 入口已注册） | `22` | `set_alert_dispatcher(...)`，按 `alert_type="generation_collapse_persistent"` 选卡片 |
-| `case_embeddings` 近邻检索 | HNSW 索引已建，未使用 | `23` | 同表 `embedding <=> :q`；`search_documents` 仍按 23 设计独立建表 |
-| 种子锚点混合检索 | 单一 embedding 相似度 | `23` | 替换 `SeedAnchorResolver.resolve_for_skill` 函数体 |
+| `case_embeddings` 近邻检索 | HNSW 索引已建，**仍未使用**（`23` 评估后未接：当前没有跨 Skill 近邻的调用方，记忆检索走独立的 `search_documents`） | 按需 | 同表 `embedding <=> :q` |
+| 种子锚点混合检索 | ✅ `23` 已实现（混合检索优先，回落单一 embedding） | `23` | 见 `interfaces/23` 第 2 节 |
 | 主图 Phase 0 | 平铺入口就位 | `24` | 第 0、3.1 节 |
 | `run_environment_probe()` 真实实现 | 协议 + Unconfigured 显式报错 | 真实 Hermes 接入 | `interfaces/03` 「追加契约：环境指纹探测」 |
 | 黄金指纹文件 | 未生成 | 运维侧 | 第 3.5 节 |

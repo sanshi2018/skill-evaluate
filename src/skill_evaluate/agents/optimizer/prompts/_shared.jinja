@@ -69,3 +69,59 @@
 {{ extra_instructions }}
 {% endif %}
 {%- endmacro %}
+
+{% macro past_patch_experience(few_shot_patches) -%}
+{#
+  docs/dev/23 第 3.4 节：检索到的相似历史修复经验。成功修复与失败尝试分两段展示——
+  "某种改法对某类失败无效"本身就是经验，放在一起不区分会让模型把失败的改法也当成范例照抄。
+#}
+{% set succeeded = few_shot_patches | selectattr("passed") | list %}
+{% set failed = few_shot_patches | rejectattr("passed") | list %}
+{% if few_shot_patches %}
+
+## 历史修复经验（few-shot 参考）
+
+以下是过去遇到**相似失败**时产出的补丁及其回归结果，来自其他 Skill 或本 Skill 的历史评测。
+它们只是参考：本次补丁仍必须针对上面的失败证据与当前原文，上下文行必须与当前原文逐字一致，
+不要把历史 diff 原样套用过来。
+{% if succeeded %}
+
+### 过往成功修复（通过了回归，可借鉴思路）
+
+{% for item in succeeded %}
+#### 成功 {{ loop.index }}（{{ item.patch_type }} → `{{ item.target_path }}`）
+
+当时的失败：
+{{ item.failure_summary }}
+
+修复理由：{{ item.rationale }}
+
+```diff
+{{ item.diff }}
+```
+{% endfor %}
+{% endif %}
+{% if failed %}
+
+### 过往失败尝试（避免重蹈覆辙）
+
+下面这些改法**没有**解决问题，除非你能说明本次情况的本质差异，否则不要走同一条路：
+
+{% for item in failed %}
+#### 失败 {{ loop.index }}（{{ item.patch_type }} → `{{ item.target_path }}`，结局：{{ item.outcome }}）
+
+当时的失败：
+{{ item.failure_summary }}
+
+当时的思路：{{ item.rationale }}
+{% if item.detail %}
+没通过的原因：{{ item.detail }}
+{% endif %}
+
+```diff
+{{ item.diff }}
+```
+{% endfor %}
+{% endif %}
+{% endif %}
+{%- endmacro %}

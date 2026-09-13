@@ -22,12 +22,16 @@ CHANGELOG.md
 同步机制照抄 docs/dev/10 断言工具箱（`agents/git_repo_cache.py`）：锁定 ref、浅克隆、记录
 commit sha；**不在检索时隐式同步**（CLI `sync-seed-anchors` 在评测前单独执行）。
 
-## 检索：单一 embedding 相似度（docs/dev/23 升级为混合检索时只替换 `resolve_for_skill` 函数体）
+## 检索：混合检索优先，单一 embedding 相似度兜底（docs/dev/23 第 3.2 节）
 
-与 docs/dev/21 正文的一处偏差：正文说"复用 2.1 的向量表做语义匹配"，但 `case_embeddings` 的
-`case_id` 外键指向 `test_cases`，锚点不是测试用例、无法入表。锚点库很小（通常几十到几百条），
-这里按 `(commit_sha, embedding_model)` 在**进程内缓存**锚点向量；docs/dev/23 会把锚点正式索引
-进它的 `search_documents(collection="seed_anchors")`。
+`resolve_for_skill` 的签名即契约，调用方（`GeneratorAgent`）不改：
+
+1. 记忆库可用且 `search_documents(collection="seed_anchors")` 里有**当前本地库 commit** 的索引 →
+   Dense + BM25 + Reranker 混合检索；索引由 `sync-seed-anchors` / `memory-index` 写入。
+2. 否则（记忆库关闭、索引未建或属于旧 commit、数据库/检索故障）→ docs/dev/21 的原实现：按
+   `(commit_sha, embedding_model)` 在进程内缓存锚点向量、单一余弦相似度排序。
+
+锚点不进 `case_embeddings`：该表 `case_id` 外键指向 `test_cases`，锚点不是测试用例。
 
 ## 可追溯性
 
@@ -67,6 +71,12 @@ from skill_evaluate.agents.git_repo_cache import (
 from skill_evaluate.config import GeneratorTrustSettings, get_settings
 from skill_evaluate.errors import AgentError
 from skill_evaluate.logging import get_logger
+from skill_evaluate.memory.hybrid_search import (
+    HybridSearchService,
+    get_default_hybrid_search,
+    memory_enabled,
+)
+from skill_evaluate.state.memory import MemoryCollection
 from skill_evaluate.state.skill import SkillDefinition
 
 logger = get_logger(component="seed_anchors")
@@ -220,10 +230,14 @@ class SeedAnchorResolver:
         library: SeedAnchorLibrary | None = None,
         embedding_client: EmbeddingClient | None = None,
         settings: GeneratorTrustSettings | None = None,
+        search_service: HybridSearchService | None = None,
     ) -> None:
         self._settings = settings or get_settings().generator_trust
         self._library = library or SeedAnchorLibrary()
         self._embedding_client = embedding_client or OpenRouterEmbeddingClient()
+        # docs/dev/23：混合检索服务。None = 按 `SKILLEVAL_MEMORY_ENABLED` 决定是否用默认实例；
+        # 显式注入则总是先走混合检索。
+        self._search_service = search_service
         # (commit_sha, embedding_model) -> 与 anchors() 同序的归一化向量。锚点库在一次进程
         # 生命周期里通常不变，每次出题都把几百条锚点重新 embed 一遍是纯浪费。
         self._vector_cache: dict[tuple[str, str], list[list[float]]] = {}
@@ -238,10 +252,57 @@ class SeedAnchorResolver:
     async def resolve_for_skill(self, skill: SkillDefinition, count: int) -> list[SeedAnchor]:
         """最相关的 `count` 条锚点（docs/dev/21 第 3.1 节 `_resolve_seed_anchors` 的落点）。
 
-        签名是 docs/dev/23 的升级契约：23 把函数体换成混合检索，调用方不动。
+        docs/dev/23 已升级：先混合检索，拿不到结果再回落到进程内单一 embedding 相似度（见模块头）。
         """
         if count <= 0 or not self._library.available:
             return []
+        hybrid = await self._resolve_via_hybrid_search(skill, count)
+        if hybrid:
+            return hybrid
+        return await self._resolve_via_embedding(skill, count)
+
+    async def _resolve_via_hybrid_search(
+        self, skill: SkillDefinition, count: int
+    ) -> list[SeedAnchor]:
+        """混合检索路径。返回空列表表示"这条路走不通"，由调用方回落，而不是"没有相关锚点"。
+
+        按当前本地库的 `commit_sha` 过滤：索引若还停在旧 commit，命中的锚点原文可能已被修改，
+        写进用例的 `<anchor_id>@<commit>` 溯源就与注入 Prompt 的原文对不上了——宁可回落重算。
+        命中结果再按 anchor_id 映射回本地库对象，保证 Prompt 里的原文一定来自当前版本。
+        只要集合里有该 commit 的文档，稠密路总会返回最近邻，因此"零命中"只可能意味着没建索引。
+        """
+        search = self._search_service or (get_default_hybrid_search() if memory_enabled() else None)
+        if search is None:
+            return []
+        try:
+            anchors = self._library.anchors()
+            hits = await search.search(
+                _skill_query_text(skill),
+                MemoryCollection.SEED_ANCHORS,
+                top_k=count,
+                metadata_filter={"commit_sha": self._library.commit_sha()},
+            )
+        except SeedAnchorLibraryError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - 回落到单一 embedding 路径，不阻断出题
+            logger.warning(
+                "seed_anchor_hybrid_search_degraded", skill_id=skill.skill_id, error=str(exc)[:300]
+            )
+            return []
+        by_id = {anchor.anchor_id: anchor for anchor in anchors}
+        selected = [by_id[hit.doc_id] for hit in hits if hit.doc_id in by_id][:count]
+        if selected:
+            logger.info(
+                "seed_anchors_resolved",
+                skill_id=skill.skill_id,
+                anchor_ids=[anchor.anchor_id for anchor in selected],
+                commit=self._library.commit_sha(),
+                method="hybrid_search",
+            )
+        return selected
+
+    async def _resolve_via_embedding(self, skill: SkillDefinition, count: int) -> list[SeedAnchor]:
+        """docs/dev/21 的原实现：进程内缓存锚点向量 + 单一余弦相似度。"""
         try:
             anchors = self._library.anchors()
             if not anchors:
@@ -267,6 +328,7 @@ class SeedAnchorResolver:
             skill_id=skill.skill_id,
             anchor_ids=[anchor.anchor_id for anchor in selected],
             commit=self._library.commit_sha(),
+            method="embedding",
         )
         return selected
 

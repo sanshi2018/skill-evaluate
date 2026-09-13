@@ -231,6 +231,15 @@ register_role(RoleSpec(
 
 ---
 
+## 8.1 `23` 追加：修复经验的检索与归档
+
+> ✅ **`23` 已落地**，调用方式不变：`propose_patch()` 出补丁前按失败摘要检索**同角色**历史经验，作为 few-shot
+> 渲染进模板（`_shared.jinja::past_patch_experience`，成功修复 / 失败尝试分两段）；`OptimizationLoop.run()`
+> 在成功返回前、耗尽挂起前把本轮每次尝试归档进 `optimizer_patch_history`。新增可选构造参数
+> `OptimizerAgent(patch_memory=)` / `OptimizationLoop(patch_memory=)`；自行 `register_role()` 的角色模板想展示经验时
+> 加一行 `{{ shared.past_patch_experience(few_shot_patches) }}`。替身优化器无需实现 `patch_memory`。
+> 详见 `docs/dev/interfaces/23_memory_and_data_flywheel.md` 第 2.2 节。
+
 ## 9. 数据库
 
 新增三张表，随 `0004_optimizer_patch_tables` 迁移落地：`patches`、

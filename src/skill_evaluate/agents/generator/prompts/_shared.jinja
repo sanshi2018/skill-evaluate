@@ -110,6 +110,34 @@ negative_constraint_ids 中如实回填对应 id：
 {% endif %}
 {%- endmacro %}
 
+{% macro archive_block(archived_examples, category) -%}
+{#
+  docs/dev/23 第 3.3 节：冷启动历史成功范本。与上面的 seed_block 是两段**独立**的 few-shot：
+  种子锚点示范"用户怎么说话"，这里示范"被验证有效的用例设计模式"。只展示与当前出题类别相同的用例。
+#}
+{% set usable = [] %}
+{% for example in archived_examples %}
+{% if example.cases_for(category) %}{% set _ = usable.append(example) %}{% endif %}
+{% endfor %}
+{% if usable %}
+
+## 历史优质用例范本（few-shot 参考：用例设计模式）
+
+以下是**其他** Skill 在历史评测中全部阻断维度通过后归档的同类用例。它们与本 Skill 业务领域相近，
+请学习其中的**出题手法**（如何制造歧义、如何埋入上下文、如何贴近真实场景），**不要照抄业务内容**
+——本 Skill 的能力边界以上面的 SKILL.md 为准，范本 Skill 能做的事本 Skill 未必能做：
+
+{% for example in usable %}
+### 范本 {{ loop.index }}：{{ example.skill_id }}
+
+- description：{{ example.description }}
+{% for case in example.cases_for(category) %}
+- 用例：{{ case.prompt }}
+{% endfor %}
+{% endfor %}
+{% endif %}
+{%- endmacro %}
+
 {% macro output_contract(count) -%}
 
 ## 输出格式

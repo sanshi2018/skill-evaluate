@@ -253,6 +253,15 @@ embedding 通道），参考 `tests/skill_evaluate/test_generator.py::PassThroug
   `TestCase.seed_anchor_id` 现在会被回填为 `<anchor_id>@<commit_sha>`（`AttackerAgent` 同口径）。
 - `GeneratorAgent(seed_anchor_resolver=...)` 可注入；种子库未同步时默认解析器直接返回空列表、不发请求。
 
+### 4.3 `23`：冷启动历史范本（`GenerationRequest.archived_examples`）
+
+> ✅ **`23` 已落地**。新增字段 `archived_examples: list[ArchivedExample] | None`：`None` = 冷启动场景由
+> `GeneratorAgent` 自动检索历史成功范本；`[]` = 显式不要；非空 = 调用方给定。与种子锚点是两段独立 few-shot，
+> 只在 `positive.jinja` / `negative.jinja` 渲染（`_shared.jinja::archive_block`，按当前类别筛选）。
+> `INCREMENTAL_PATCH`、带 `capability_focus` 的补盲出题、以及该 Skill 已有归档时都不检索。
+> 新增可选构造参数 `GeneratorAgent(cold_start_retriever=)`。新类别模板若也想用，传入的变量是
+> `archived_examples` 与 `category`。详见 `docs/dev/interfaces/23_memory_and_data_flywheel.md` 第 2.1 节。
+
 ## 5. Optimizer 闭环的澄清（`09`/`11`）
 
 "Optimizer 重写 description 后需要在训练集上重新验证"这个场景**不经过

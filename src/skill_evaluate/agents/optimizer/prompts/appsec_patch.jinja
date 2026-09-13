@@ -3,6 +3,7 @@
 你的任务是提出修复补丁。
 
 {{ shared.failure_evidence(skill, failed_case_prompts, verdicts, extra_instructions) }}
+{{ shared.past_patch_experience(few_shot_patches) }}
 {% if security_findings %}
 ## 红队发现（本次修复的直接依据）
 

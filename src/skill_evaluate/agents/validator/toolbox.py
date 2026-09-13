@@ -6,8 +6,9 @@
 
 1. **同步**：把仓库 `git clone/fetch` 到本地缓存目录，并解析出当前 commit sha
    （写进 `AssertionSpec.template_ref`，保证断点恢复后模板版本不漂移）。
-2. **检索**：`lookup()` 按关键词打分选模板。当前是关键词匹配版；`_semantic_lookup()`
-   是留给 docs/dev/23 的占位钩子（向量 + BM25 + Reranker 混合检索）。
+2. **检索**：`lookup()` 选模板。`_semantic_lookup()` 已由 docs/dev/23 升级为混合检索
+   （向量 + BM25 + Reranker，`collection="assertion_templates"`），并与关键词打分取并集；
+   记忆库不可用时退化为纯关键词版（`_keyword_lookup()`，保留为降级路径与单测基线）。
 3. **渲染**：`.jinja` 模板按参数渲染成可执行脚本；非 `.jinja` 模板（如
    `sql_no_injection_validator.py`）原样取用。
 
@@ -40,6 +41,12 @@ from skill_evaluate.agents.git_repo_cache import (
 from skill_evaluate.config import get_settings
 from skill_evaluate.errors import AgentError
 from skill_evaluate.logging import get_logger
+from skill_evaluate.memory.hybrid_search import (
+    HybridSearchService,
+    get_default_hybrid_search,
+    memory_enabled,
+)
+from skill_evaluate.state.memory import MemoryCollection
 
 logger = get_logger(component="assertion_toolbox")
 
@@ -235,8 +242,12 @@ class AssertionToolbox:
         *,
         repo_url: str | None = None,
         ref: str | None = None,
+        search_service: HybridSearchService | None = None,
     ) -> None:
         settings = get_settings().validator
+        # docs/dev/23：模板语义检索服务。None = 按 `SKILLEVAL_MEMORY_ENABLED` 决定是否使用进程级
+        # 默认实例（关闭时 `_semantic_lookup()` 只走关键词匹配）；显式注入则总是使用。
+        self._search_service = search_service
         self._root = (
             Path(root).expanduser() if root else Path(settings.toolbox_cache_dir).expanduser()
         )
@@ -302,13 +313,58 @@ class AssertionToolbox:
         return [m for m in matches if m.score >= limit]
 
     async def _semantic_lookup(self, query: str) -> list[TemplateMatch]:
-        """占位：当前仅调用关键词匹配版本；docs/dev/23 接入后替换为混合检索实现。
+        """混合检索 + 关键词打分取并集（docs/dev/23 第 3.1 节替换 docs/dev/10 的占位实现）。
 
-        签名与返回类型是契约的一部分（docs/dev/10 第 3.2 节），23 号文档只替换
-        函数体：向量语义检索 + BM25 + Reranker，`score` 归一化到同一个 0~1 区间，
-        `ValidatorAgent` 与阈值配置都不需要改。
+        签名与返回类型不变（docs/dev/10 第 3.2 节的契约）：`score` 在 0~1，`lookup()` 仍按
+        `ValidatorSettings.template_match_threshold` 过滤，`ValidatorAgent` 不需要改。
+
+        与文档 23 正文的三处差异（以本实现为准）：
+
+        1. **与关键词分数取 max 而不是只用语义分数**：升级不应让关键词版能命中的模板反而命不中
+           ——例如 manifest 里写死的 `pdfplumber` 在 query 里原样出现，关键词分数是确定的 1.0，
+           语义分数却可能因 Reranker 缺席而只有 0.4。取 max 让升级只增加召回、不减少。
+        2. **检索命中按模板名映射回当前 manifest**（正文写 `metadata["template_path"]`，实际
+           `TemplateMatch.template` 是 `TemplateMetadata`）：索引里残留的、已从工具箱删除的模板
+           对不上号即丢弃，Validator 永远不会去读一个不存在的模板文件。
+        3. **记忆库任何故障都退化为纯关键词版**并打 warning：模板检索是加速手段，数据库或
+           embedding 通道故障不该让断言规划失败（与"工具箱不可用不是错误"同一取舍）。
         """
-        return self._keyword_lookup(query)
+        keyword_matches = self._keyword_lookup(query)
+        search = self._resolve_search_service()
+        if search is None or not self.manifest():
+            return keyword_matches
+        try:
+            hits = await search.search(
+                query,
+                MemoryCollection.ASSERTION_TEMPLATES,
+                top_k=get_settings().memory.validator_template_top_k,
+            )
+        except Exception as exc:  # noqa: BLE001 - 降级路径：任何记忆库故障都回落关键词匹配
+            logger.warning("assertion_template_semantic_lookup_degraded", error=str(exc)[:300])
+            return keyword_matches
+
+        by_name = {meta.template: meta for meta in self.manifest()}
+        scores = {match.template.template: match.score for match in keyword_matches}
+        stale: list[str] = []
+        for hit in hits:
+            name = str(hit.metadata.get("template") or hit.doc_id)
+            if name not in by_name:
+                stale.append(name)
+                continue
+            scores[name] = max(scores.get(name, 0.0), max(0.0, min(1.0, hit.score or 0.0)))
+        if stale:
+            # 索引比本地工具箱旧：提示重跑 `skill-evaluate sync-toolbox` / `memory-index`。
+            logger.warning("assertion_template_index_stale", templates=stale)
+
+        matches = [TemplateMatch(template=by_name[name], score=score) for name, score in scores.items()]
+        matches = [m for m in matches if m.score > 0]
+        matches.sort(key=lambda m: (-m.score, m.template.template))
+        return matches
+
+    def _resolve_search_service(self) -> HybridSearchService | None:
+        if self._search_service is not None:
+            return self._search_service
+        return get_default_hybrid_search() if memory_enabled() else None
 
     def _keyword_lookup(self, query: str) -> list[TemplateMatch]:
         matches = [

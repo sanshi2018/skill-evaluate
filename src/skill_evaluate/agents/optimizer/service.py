@@ -31,10 +31,12 @@ from skill_evaluate.agents.templating import build_prompt_env
 from skill_evaluate.config import get_settings
 from skill_evaluate.errors import AgentError
 from skill_evaluate.logging import get_logger
+from skill_evaluate.memory.patch_history import PatchHistoryMemory, get_default_patch_history
 from skill_evaluate.observability.langfuse_adapter import LangfuseAdapter, LangfuseTraceHandle
 from skill_evaluate.persistence.repository import PatchRepository
 from skill_evaluate.state.enums import DatasetSplit, PatchType
 from skill_evaluate.state.judge import ConsensusResult, JudgeVerdict
+from skill_evaluate.state.memory import PatchExperience
 from skill_evaluate.state.patch import Patch
 from skill_evaluate.state.security import SecurityFinding
 from skill_evaluate.state.skill import SkillDefinition
@@ -180,6 +182,7 @@ class OptimizerAgent(BaseLLMAgent):
         trace_handle: LangfuseTraceHandle | None = None,
         patch_repository: PatchRepository | None = None,
         persist: bool = True,
+        patch_memory: PatchHistoryMemory | None = None,
     ) -> None:
         settings = get_settings()
         super().__init__(
@@ -191,10 +194,18 @@ class OptimizerAgent(BaseLLMAgent):
         )
         self._patch_repo = patch_repository or PatchRepository()
         self._persist = persist
+        # docs/dev/23 第 3.4 节：修复经验检索。None = 按 `SKILLEVAL_MEMORY_ENABLED` 决定是否使用
+        # 进程级默认实例（关闭时不检索、不访问数据库）；显式注入则总是使用。
+        self._patch_memory = patch_memory
 
     async def propose_patch(self, ctx: FailureContext) -> Patch:
-        """按 `ctx.role` 选模板生成补丁并落库。"""
+        """按 `ctx.role` 选模板生成补丁并落库。
+
+        docs/dev/23 增强：出补丁前按失败摘要检索同角色的历史修复经验，作为 few-shot 追加进
+        Prompt（成功修复 / 失败尝试分两段）。对外签名不变，`OptimizationLoop.run()` 无需改调用方式。
+        """
         spec = get_role(ctx.role)
+        similar_past_patches = await self._retrieve_past_patches(ctx)
         prompt = _ENV.get_template(spec.prompt_path).render(
             skill=ctx.skill,
             failed_case_prompts=ctx.failed_case_prompts,
@@ -204,6 +215,9 @@ class OptimizerAgent(BaseLLMAgent):
             # docs/dev/15：只有 appsec_patch.jinja 渲染它，其余模板不引用。
             # 模板环境是 StrictUndefined，"用到未定义变量"才报错，多传无害。
             security_findings=ctx.security_findings,
+            # docs/dev/23：历史修复经验。`_shared.jinja::past_patch_experience` 渲染，空列表不出段落；
+            # 自行注册的角色模板不引用它也无害（StrictUndefined 只在"用到"时报错）。
+            few_shot_patches=similar_past_patches,
         )
         proposal = await self._call_llm(prompt, PatchProposal, system=_SYSTEM_PROMPT)
         patch = self._to_patch(ctx, spec, proposal)
@@ -219,8 +233,32 @@ class OptimizerAgent(BaseLLMAgent):
             patch_type=patch.patch_type.value,
             target_path=patch.target_path,
             failed_case_count=len(ctx.failed_case_ids),
+            few_shot_patch_ids=[experience.patch_id for experience in similar_past_patches],
         )
         return patch
+
+    @property
+    def patch_memory(self) -> PatchHistoryMemory | None:
+        """实际生效的修复经验库（`OptimizationLoop` 未单独注入时复用它归档）。"""
+        if self._patch_memory is not None:
+            return self._patch_memory
+        return get_default_patch_history() if get_settings().memory.enabled else None
+
+    async def _retrieve_past_patches(self, ctx: FailureContext) -> list[PatchExperience]:
+        """检索相似修复经验。任何故障都按"没有经验"继续：few-shot 是增强，不是出补丁的前提。"""
+        memory = self.patch_memory
+        if memory is None:
+            return []
+        try:
+            return await memory.retrieve_similar(ctx)
+        except Exception as exc:  # noqa: BLE001 - 记忆库故障不得阻断补丁生成
+            logger.warning(
+                "optimizer_patch_history_retrieval_failed",
+                skill_id=ctx.skill.skill_id,
+                role=ctx.role,
+                error=str(exc)[:300],
+            )
+            return []
 
     def _to_patch(self, ctx: FailureContext, spec: RoleSpec, proposal: PatchProposal) -> Patch:
         patch_type = PatchType(proposal.patch_type)

@@ -30,6 +30,10 @@ langfuse = ["langfuse>=2.50"]
 # 没装则退化为字符比例估算并**如实标注不精确**（此时限额附近不阻断，改为请人
 # 确认）。做成可选依赖而不是必需：只跑其余维度的环境不该被迫拉一份 BPE 词表。
 tokenizer = ["tiktoken>=0.8"]
+# docs/dev/23：混合检索的本地 Cross-Encoder 重排。会连带拉入 torch（数百 MB），因此做成可选：
+# 没装时 HybridSearchService 退化为 RRF 融合排序（稠密 + BM25 两路召回照常工作），并在日志里
+# 如实记录 `reranker_unavailable`，不伪装成重排过。
+reranker = ["sentence-transformers>=3.0"]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
@@ -70,6 +74,11 @@ ignore_missing_imports = true
 # PyYAML 但没装 types-PyYAML 的环境会因为缺 stub 而报错。
 [[tool.mypy.overrides]]
 module = "yaml.*"
+ignore_missing_imports = true
+
+# sentence-transformers 是**可选**依赖（docs/dev/23 Reranker），只在 `memory/reranker.py` 里延迟导入。
+[[tool.mypy.overrides]]
+module = "sentence_transformers.*"
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

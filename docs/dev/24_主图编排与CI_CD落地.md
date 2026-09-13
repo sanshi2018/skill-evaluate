@@ -104,6 +104,11 @@ def build_main_graph() -> CompiledGraph:
 > 主图 schema 并入其两个新私有键；编译后 `register_graph_resumer(...)`，CLI `run` 入口调用
 > `configure_notification_channels()`。详见 `docs/dev/interfaces/22_human_approval_workbench.md` 第 2 节。
 
+> ⚠️ 文档 23 实现后的修正：`finalize.rag_archive` 直接调用 `skill_evaluate.memory.rag_archive.archive_successful_run(run_id)`，
+> "全部 blocking 维度 PASS"的门槛判断在函数内部（返回 `ArchiveOutcome`，含未归档原因），节点只需 try/except 基础设施故障；
+> CI 需迁移到 `0011_search_documents`，`sync-toolbox` / `sync-seed-anchors` 现在会顺带建索引（需要 DB 与 embedding Key）。
+> 详见 `docs/dev/interfaces/23_memory_and_data_flywheel.md` 第 3 节。
+
 **并行汇聚（LangGraph fan-in）说明**：Phase A 四个节点、Phase B 三个节点分别通过 LangGraph 的多前驱边自然并行执行，`finalize.report` 作为汇聚点等待其全部前驱（各维度的 `finalize_dimension_report` 终节点）完成——LangGraph 原生支持这种 DAG 汇聚语义，本文档不需要手写额外的同步屏障。
 
 ## 3. `interrupt_before` 编译期列表汇总

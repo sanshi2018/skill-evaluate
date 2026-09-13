@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 from alembic import command as alembic_command
@@ -268,6 +268,10 @@ def sync_toolbox() -> None:
             f"已同步到 {toolbox.root}（commit={toolbox.commit_sha()}，"
             f"{len(toolbox.manifest())} 个模板）"
         )
+        # docs/dev/23 第 3.1 节：把 manifest 的 description + keywords 索引进记忆库，
+        # Validator 的 `_semantic_lookup()` 才检索得到（正文里的 `sync_assertion_toolbox` 子命令
+        # 并入本命令实现，避免"同步了仓库却忘了建索引"）。
+        await _sync_memory_collection("assertion_templates", toolbox=toolbox)
 
     asyncio.run(_run())
 
@@ -302,6 +306,84 @@ def sync_seed_anchors() -> None:
             f"已同步到 {library.root}（commit={library.commit_sha()}，"
             f"{len(library.anchors())} 条锚点）"
         )
+        # docs/dev/23 第 3.2 节：锚点索引进 `search_documents(collection="seed_anchors")`，
+        # `SeedAnchorResolver` 才会走混合检索（否则回落到进程内单一 embedding 相似度）。
+        await _sync_memory_collection("seed_anchors", library=library)
+
+    asyncio.run(_run())
+
+
+async def _sync_memory_collection(
+    collection: str,
+    *,
+    toolbox: Any | None = None,
+    library: Any | None = None,
+) -> None:
+    """把本地缓存的外部仓库全量同步进记忆库（docs/dev/23）。`sync-*` 与 `memory-index` 共用。
+
+    记忆库关闭时只提示不报错；索引失败（数据库 / embedding 通道故障）以退出码 1 结束——仓库
+    本身可能已同步成功，但检索侧仍停在旧索引，CI 必须看得见。
+    """
+    from skill_evaluate.config import get_settings
+
+    if not get_settings().memory.enabled:
+        typer.secho(
+            f"SKILLEVAL_MEMORY_ENABLED=false：跳过 {collection} 索引（检索将走降级路径）。",
+            fg=typer.colors.YELLOW,
+        )
+        return
+
+    from skill_evaluate.memory.hybrid_search import get_default_hybrid_search
+    from skill_evaluate.memory.indexers import sync_assertion_template_index, sync_seed_anchor_index
+
+    search = get_default_hybrid_search()
+    try:
+        if collection == "assertion_templates":
+            assert toolbox is not None, "assertion_templates 需要传入 toolbox"
+            stats = await sync_assertion_template_index(toolbox, search)
+        else:
+            assert library is not None, "seed_anchors 需要传入 library"
+            stats = await sync_seed_anchor_index(library, search)
+    except Exception as exc:  # CLI 边界：把任何故障转成可读信息与退出码
+        typer.secho(f"{collection} 索引失败：{exc}", fg=typer.colors.RED)
+        raise typer.Exit(code=1) from exc
+    if stats is None:
+        typer.secho(f"{collection}：本地缓存不可用，未改动已有索引。", fg=typer.colors.YELLOW)
+        return
+    typer.echo(
+        f"{collection} 索引完成：新写入 {stats.indexed}，未变化 {stats.skipped}，删除 {stats.deleted}"
+    )
+
+
+@app.command()
+def memory_index(
+    collection: str = typer.Option(
+        "all",
+        "--collection",
+        help="要重建索引的集合：assertion_templates | seed_anchors | all",
+    ),
+) -> None:
+    """按**本地缓存**重建记忆库索引，不拉取远程仓库（docs/dev/23 第 3.1、3.2 节）。
+
+    用于数据库重建之后、换了 embedding 模型之后、或无网络但本地已有缓存的环境。
+    `successful_skill_archive` / `optimizer_patch_history` 是只增不删的历史归档，没有"源"可以
+    重建，不在本命令范围内。
+    """
+    configure_logging()
+
+    from skill_evaluate.agents.generator.seed_anchors import SeedAnchorLibrary
+    from skill_evaluate.agents.validator import AssertionToolbox
+
+    valid = {"assertion_templates", "seed_anchors", "all"}
+    if collection not in valid:
+        typer.secho(f"未知集合 {collection!r}，可选：{sorted(valid)}", fg=typer.colors.RED)
+        raise typer.Exit(code=2)
+
+    async def _run() -> None:
+        if collection in ("assertion_templates", "all"):
+            await _sync_memory_collection("assertion_templates", toolbox=AssertionToolbox())
+        if collection in ("seed_anchors", "all"):
+            await _sync_memory_collection("seed_anchors", library=SeedAnchorLibrary())
 
     asyncio.run(_run())
 

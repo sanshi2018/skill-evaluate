@@ -27,6 +27,13 @@ from skill_evaluate.agents.optimizer.service import OptimizerAgent
 from skill_evaluate.config import get_settings
 from skill_evaluate.errors import PatchApplyError
 from skill_evaluate.logging import get_logger
+from skill_evaluate.memory.patch_history import (
+    OUTCOME_APPLY_FAILED,
+    OUTCOME_REGRESSION_FAILED,
+    OUTCOME_REGRESSION_PASSED,
+    PatchAttempt,
+    PatchHistoryMemory,
+)
 from skill_evaluate.persistence.approval_service import ApprovalService
 from skill_evaluate.persistence.repository import (
     HumanApprovalRepository,
@@ -66,6 +73,7 @@ class OptimizationLoop:
         pipeline_state_repository: PipelineStateRepository | None = None,
         approval_repository: HumanApprovalRepository | None = None,
         approval_service: ApprovalService | None = None,
+        patch_memory: PatchHistoryMemory | None = None,
     ) -> None:
         self.max_retries = (
             get_settings().optimizer.max_retries if max_retries is None else max_retries
@@ -77,6 +85,9 @@ class OptimizationLoop:
         self._approval_service = approval_service or ApprovalService(
             ledger_repository=approval_repository or HumanApprovalRepository()
         )
+        # docs/dev/23 第 3.4 节：修复经验归档。None = 复用 `optimizer.patch_memory`（它按
+        # `SKILLEVAL_MEMORY_ENABLED` 决定是否启用），让"检索"与"归档"默认落在同一个库里。
+        self._patch_memory = patch_memory
 
     async def run(
         self,
@@ -103,6 +114,8 @@ class OptimizationLoop:
         node_name = f"optimizer:{ctx.role}"
         working_skill = ctx.skill
         last_patch: Patch | None = None
+        # 本轮闭环每一次尝试的结局，结束时整体归档进修复经验库（docs/dev/23，成败都存）。
+        attempts: list[PatchAttempt] = []
 
         for attempt in range(self.max_retries):
             attempt_ctx = ctx.model_copy(update={"skill": working_skill})
@@ -120,6 +133,14 @@ class OptimizationLoop:
                         applied=False,
                         regression_passed=None,
                         detail=f"补丁应用失败：{exc}",
+                    )
+                )
+                attempts.append(
+                    PatchAttempt(
+                        patch=patch,
+                        outcome=OUTCOME_APPLY_FAILED,
+                        detail=f"补丁应用失败：{exc}",
+                        attempt=attempt,
                     )
                 )
                 logger.warning(
@@ -144,7 +165,17 @@ class OptimizationLoop:
                 )
             )
 
+            attempts.append(
+                PatchAttempt(
+                    patch=patch,
+                    outcome=OUTCOME_REGRESSION_PASSED if result.passed else OUTCOME_REGRESSION_FAILED,
+                    detail=result.detail,
+                    attempt=attempt,
+                )
+            )
+
             if result.passed:
+                await self._archive_attempts(run_id, ctx, attempts, optimizer)
                 logger.info(
                     "optimizer_loop_succeeded",
                     run_id=run_id,
@@ -166,7 +197,37 @@ class OptimizationLoop:
             await self._state_repo.increment_retry(run_id, node_name)
             working_skill = patched_skill
 
+        # 挂起**之前**归档：`request_human_approval()` 首次调用会以 GraphInterrupt 冒出节点，
+        # 放在它之后永远执行不到；doc_id = patch_id，恢复后重跑节点再归档也只是 upsert。
+        await self._archive_attempts(run_id, ctx, attempts, optimizer)
         return await self._suspend(run_id, node_name, ctx, thread_id, last_patch)
+
+    async def _archive_attempts(
+        self,
+        run_id: str,
+        ctx: FailureContext,
+        attempts: list[PatchAttempt],
+        optimizer: OptimizerAgent,
+    ) -> None:
+        """把本轮全部尝试归档进 `optimizer_patch_history`（docs/dev/23 第 3.4、4 节）。
+
+        归档失败只打 warning：经验库是数据飞轮的"燃料"，不是闭环的一部分——为了存一条经验
+        让一个已经修好的补丁无法返回，本末倒置。
+        """
+        # getattr：调用方（含单测）可能传入只实现了 `propose_patch()` 的替身优化器。
+        memory = self._patch_memory or getattr(optimizer, "patch_memory", None)
+        if memory is None or not attempts:
+            return
+        try:
+            await memory.archive_attempts(run_id, ctx, attempts)
+        except Exception as exc:  # noqa: BLE001 - 归档故障不得影响闭环结果
+            logger.warning(
+                "optimizer_patch_history_archive_failed",
+                run_id=run_id,
+                role=ctx.role,
+                attempts=len(attempts),
+                error=str(exc)[:300],
+            )
 
     async def _suspend(
         self,

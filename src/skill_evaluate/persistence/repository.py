@@ -7,10 +7,11 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TypedDict
+from typing import Any, TypedDict
 
-from sqlalchemy import desc, func, select, update
+from sqlalchemy import delete, desc, func, literal_column, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.sql.elements import ColumnClause
 
 from skill_evaluate.errors import PersistenceError
 from skill_evaluate.persistence.db import new_session
@@ -36,6 +37,7 @@ from skill_evaluate.persistence.models import (
     PendingApprovalORM,
     PendingHookORM,
     RunORM,
+    SearchDocumentORM,
     SecurityFindingORM,
     SkillORM,
     TestCaseORM,
@@ -60,6 +62,7 @@ from skill_evaluate.state.enums import (
 from skill_evaluate.state.generator_trust import CanaryProbeRecord, GenerationCollapseEvent
 from skill_evaluate.state.golden import GoldenCase, JudgeMissRecord
 from skill_evaluate.state.judge import ConsensusResult, JudgeVerdict
+from skill_evaluate.state.memory import SearchDocument, StoredSearchDocument
 from skill_evaluate.state.patch import Patch, PatchApplicationResult
 from skill_evaluate.state.security import SecurityFinding
 from skill_evaluate.state.skill import SkillDefinition
@@ -1650,3 +1653,195 @@ class ApprovalDecisionRepository:
                 note=row.note,
                 decided_at=row.decided_at,
             )
+
+
+# --------------------------------------------------------------------------- #
+# docs/dev/23：长时记忆与数据飞轮
+# --------------------------------------------------------------------------- #
+
+# 全文检索生成列（迁移 0011 声明、ORM 不映射，见 SearchDocumentORM 类注释）。
+_TEXT_SEARCH_COLUMN: ColumnClause[Any] = literal_column("search_documents.text_search")
+
+
+class SearchDocumentRepository:
+    """`search_documents` 表存取：`memory.hybrid_search.SearchDocumentStore` 协议的 Postgres 实现。
+
+    两路召回各自是一条 SQL，**融合与重排不在库里做**：Reranker 是本地模型，RRF 需要两路的
+    名次，放在服务层做可以让"换一种融合策略"不必改 SQL，也让单测可以用内存替身覆盖全部排序逻辑。
+    """
+
+    async def get_fingerprints(
+        self, collection: str, doc_ids: list[str]
+    ) -> dict[str, tuple[str, str]]:
+        """已入库文档的 `(content_hash, embedding_model)`，供索引时跳过未变化的文本。"""
+        if not doc_ids:
+            return {}
+        async with new_session() as session:
+            rows = await session.execute(
+                select(
+                    SearchDocumentORM.doc_id,
+                    SearchDocumentORM.content_hash,
+                    SearchDocumentORM.embedding_model,
+                ).where(
+                    SearchDocumentORM.collection == collection,
+                    SearchDocumentORM.doc_id.in_(doc_ids),
+                )
+            )
+            return {row.doc_id: (row.content_hash, row.embedding_model) for row in rows}
+
+    async def upsert_many(self, docs: list[StoredSearchDocument]) -> None:
+        """批量 upsert（主键 `(collection, doc_id)`），一个事务内完成。
+
+        `created_at` 冲突时保留原值：它表达"这条记忆最初是什么时候进库的"，重新同步一次
+        工具箱不该让所有模板看起来都是刚刚才出现的。
+        """
+        if not docs:
+            return
+        now = datetime.now(UTC)
+        async with new_session() as session, session.begin():
+            for item in docs:
+                stmt = pg_insert(SearchDocumentORM).values(
+                    collection=item.document.collection,
+                    doc_id=item.document.doc_id,
+                    text=item.document.text,
+                    lexical_text=item.lexical_text,
+                    doc_metadata=item.document.metadata,
+                    embedding=item.embedding,
+                    embedding_model=item.embedding_model,
+                    content_hash=item.content_hash,
+                    created_at=now,
+                    updated_at=now,
+                )
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=["collection", "doc_id"],
+                    set_={
+                        "text": stmt.excluded.text,
+                        "lexical_text": stmt.excluded.lexical_text,
+                        "metadata": stmt.excluded.metadata,
+                        "embedding": stmt.excluded.embedding,
+                        "embedding_model": stmt.excluded.embedding_model,
+                        "content_hash": stmt.excluded.content_hash,
+                        "updated_at": stmt.excluded.updated_at,
+                    },
+                )
+                await session.execute(stmt)
+
+    async def update_metadata(self, collection: str, doc_id: str, metadata: dict[str, object]) -> None:
+        """只更新元数据（文本未变时同步 commit_sha 等溯源字段，不必重新 embed）。"""
+        async with new_session() as session, session.begin():
+            await session.execute(
+                update(SearchDocumentORM)
+                .where(
+                    SearchDocumentORM.collection == collection,
+                    SearchDocumentORM.doc_id == doc_id,
+                )
+                .values(doc_metadata=metadata, updated_at=datetime.now(UTC))
+            )
+
+    async def delete_missing(self, collection: str, keep_doc_ids: list[str]) -> int:
+        """删除集合里不在 `keep_doc_ids` 中的文档，返回删除条数（集合同步用）。"""
+        async with new_session() as session, session.begin():
+            stmt = delete(SearchDocumentORM).where(SearchDocumentORM.collection == collection)
+            if keep_doc_ids:
+                stmt = stmt.where(SearchDocumentORM.doc_id.not_in(keep_doc_ids))
+            result = await session.execute(stmt)
+            return int(result.rowcount or 0)  # type: ignore[attr-defined]
+
+    async def dense_search(
+        self,
+        collection: str,
+        query_embedding: list[float],
+        *,
+        embedding_model: str,
+        limit: int,
+        metadata_filter: dict[str, object] | None = None,
+    ) -> list[tuple[SearchDocument, float]]:
+        """pgvector 余弦近邻，返回 `(文档, 余弦相似度)`，相似度降序。
+
+        带 `embedding_model` 过滤：不同模型的向量不在同一空间，混算得到的是一个看起来正常
+        却毫无意义的相似度。注意 HNSW 与 WHERE 过滤叠加时，候选数受 `hnsw.ef_search`（默认 40）
+        限制，`limit` 保持在几十条以内即可。
+        """
+        distance = SearchDocumentORM.embedding.cosine_distance(query_embedding)
+        async with new_session() as session:
+            query = select(SearchDocumentORM, distance.label("distance")).where(
+                SearchDocumentORM.collection == collection,
+                SearchDocumentORM.embedding_model == embedding_model,
+            )
+            if metadata_filter:
+                query = query.where(SearchDocumentORM.doc_metadata.contains(metadata_filter))
+            rows = await session.execute(query.order_by(distance).limit(limit))
+            return [(_orm_to_search_document(row[0]), 1.0 - float(row[1])) for row in rows]
+
+    async def lexical_search(
+        self,
+        collection: str,
+        tokens: list[str],
+        *,
+        limit: int,
+        metadata_filter: dict[str, object] | None = None,
+    ) -> list[tuple[SearchDocument, float]]:
+        """Postgres 全文检索，返回 `(文档, 归一化 ts_rank_cd)`，得分降序。
+
+        查询词元以 OR 连接：BM25 路的职责是"低频专有词（如 `pdfplumber`）一旦出现就要命中"，
+        AND 语义会让一个多词查询因为缺一个词而整体落空。`ts_rank_cd(..., 32)` 把得分归一化为
+        `rank / (rank + 1)`，落在 0~1。词元由 `lexical_tokens()` 产出，只含字母数字下划线与汉字，
+        不含 tsquery 运算符，可以安全拼接。
+        """
+        if not tokens:
+            return []
+        tsquery = func.to_tsquery("simple", " | ".join(tokens))
+        rank = func.ts_rank_cd(_TEXT_SEARCH_COLUMN, tsquery, 32)
+        async with new_session() as session:
+            query = select(SearchDocumentORM, rank.label("rank")).where(
+                SearchDocumentORM.collection == collection,
+                _TEXT_SEARCH_COLUMN.op("@@")(tsquery),
+            )
+            if metadata_filter:
+                query = query.where(SearchDocumentORM.doc_metadata.contains(metadata_filter))
+            rows = await session.execute(query.order_by(desc("rank")).limit(limit))
+            return [(_orm_to_search_document(row[0]), float(row[1])) for row in rows]
+
+    async def list_documents(
+        self,
+        collection: str,
+        *,
+        metadata_filter: dict[str, object] | None = None,
+        limit: int = 100,
+    ) -> list[SearchDocument]:
+        """按元数据过滤列出文档（如取某份归档范本下的全部用例），按写入时间先后。"""
+        async with new_session() as session:
+            query = select(SearchDocumentORM).where(SearchDocumentORM.collection == collection)
+            if metadata_filter:
+                query = query.where(SearchDocumentORM.doc_metadata.contains(metadata_filter))
+            rows = (
+                await session.execute(
+                    query.order_by(SearchDocumentORM.created_at, SearchDocumentORM.doc_id).limit(
+                        limit
+                    )
+                )
+            ).scalars()
+            return [_orm_to_search_document(row) for row in rows]
+
+    async def count(
+        self, collection: str, *, metadata_filter: dict[str, object] | None = None
+    ) -> int:
+        async with new_session() as session:
+            query = (
+                select(func.count())
+                .select_from(SearchDocumentORM)
+                .where(SearchDocumentORM.collection == collection)
+            )
+            if metadata_filter:
+                query = query.where(SearchDocumentORM.doc_metadata.contains(metadata_filter))
+            return int((await session.execute(query)).scalar_one())
+
+
+def _orm_to_search_document(row: SearchDocumentORM) -> SearchDocument:
+    # 不回传 embedding：见 SearchDocument.embedding 字段注释。
+    return SearchDocument(
+        doc_id=row.doc_id,
+        collection=row.collection,
+        text=row.text,
+        metadata=dict(row.doc_metadata or {}),
+    )

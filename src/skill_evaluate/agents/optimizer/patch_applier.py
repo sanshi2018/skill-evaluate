@@ -222,7 +222,9 @@ def _apply_body_patch(skill: SkillDefinition, patch: Patch) -> SkillDefinition:
 def _apply_code_patch(skill: SkillDefinition, patch: Patch) -> SkillDefinition:
     root = ensure_working_copy(skill)
     target = (root / patch.target_path).resolve()
-    if not target.is_relative_to(root):
+    # root 也要 resolve：macOS 的临时目录 /var/folders/... 是 /private/var/... 的符号链接，
+    # 只 resolve 一侧会让合法的 `scripts/run.py` 被误判为越出根目录。
+    if not target.is_relative_to(root.resolve()):
         # 补丁的 target_path 是模型输出的字符串，必须当成不可信输入处理：
         # `../../etc/passwd` 这类路径穿越不能因为"是我们自己的模型写的"就放行。
         raise PatchApplyError(f"补丁目标路径越出 skill 根目录：{patch.target_path!r}")

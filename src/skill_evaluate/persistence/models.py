@@ -554,3 +554,53 @@ class ApprovalDecisionORM(Base):
     outcome: Mapped[str] = mapped_column(String, nullable=False)
     note: Mapped[str | None] = mapped_column(String, nullable=True)
     decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+# --------------------------------------------------------------------------- #
+# docs/dev/23：长时记忆与数据飞轮
+# --------------------------------------------------------------------------- #
+
+# `search_documents.embedding` 的定长维度。与 `CASE_EMBEDDING_DIMENSIONS` 同值且共用同一个
+# embedding 模型配置（`GeneratorTrustSettings.embedding_model`），但**刻意不复用同一个常量**：
+# 两张表的生命周期独立，将来某一张单独换维度时不该连带改写另一张的迁移语义。
+SEARCH_DOCUMENT_EMBEDDING_DIMENSIONS = 1536
+
+
+class SearchDocumentORM(Base):
+    """通用长期记忆库：一张表同时承载稠密向量索引与全文检索索引（docs/dev/23 第 2.1 节）。
+
+    与 docs/dev/04 "统一存储 PostgreSQL + pgvector" 的决策一致，不引入独立的向量库 / ES。
+    按 `collection` 划分四个逻辑集合：`assertion_templates` / `seed_anchors` /
+    `successful_skill_archive` / `optimizer_patch_history`。
+
+    ## 与文档 23 正文 SQL 的偏差（以本实现为准）
+
+    - **全文检索列建在 `lexical_text` 上，词典用 `simple` 而不是 `english`**：本项目文本大量
+      是中文，`to_tsvector('english', ...)` 会把一整段不含空格的中文当成**一个**词元，BM25 路
+      对中文查询等于失效。`lexical_text` 由 Python 侧预切分（英文按词、中文按 2-gram，见
+      `memory/hybrid_search.py::lexical_tokens`），`simple` 词典只做小写化、不做词干/停用词，
+      保证入库与查询两侧的切分规则完全一致。
+    - **向量索引用 HNSW**（同迁移 0009 的理由：空表上建 ivfflat 召回率极差）。
+    - 追加 `embedding_model`（换模型后旧向量退出参照系）与 `content_hash`（同步时文本未变就
+      跳过重新 embed，`sync-toolbox` 反复执行不重复花钱）。
+    """
+
+    __tablename__ = "search_documents"
+
+    collection: Mapped[str] = mapped_column(String, primary_key=True)
+    doc_id: Mapped[str] = mapped_column(String, primary_key=True)
+    text: Mapped[str] = mapped_column(String, nullable=False)  # 原文：展示与 Reranker 打分用
+    # 预切分后以空格连接的词元串，全文检索的生成列基于它（见类注释）。
+    lexical_text: Mapped[str] = mapped_column(String, nullable=False)
+    # 属性名不能叫 `metadata`（与 DeclarativeBase.metadata 冲突），列名仍为 metadata。
+    doc_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, default=dict)
+    embedding: Mapped[list[float]] = mapped_column(
+        VECTOR(SEARCH_DOCUMENT_EMBEDDING_DIMENSIONS), nullable=False
+    )
+    embedding_model: Mapped[str] = mapped_column(String, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # `text_search tsvector GENERATED ALWAYS AS (to_tsvector('simple', lexical_text)) STORED`
+    # 只在迁移里声明、不映射到 ORM：生成列由库维护，ORM 一旦映射就可能在 INSERT 时试图写它。
+    # 查询侧用 `func.to_tsvector` 的等价表达式引用该列（见 SearchDocumentRepository）。

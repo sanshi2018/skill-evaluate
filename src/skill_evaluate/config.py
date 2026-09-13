@@ -599,6 +599,55 @@ class ValidatorSettings(BaseSettings):
     assertion_timeout_s: int = 30  # 单条断言脚本在沙箱内的执行超时，供沙箱客户端下发
 
 
+class MemorySettings(BaseSettings):
+    """长时记忆与数据飞轮（docs/dev/23）：混合检索 + 三处 Few-shot 闭环。
+
+    embedding 模型/维度**不在这里另配**，复用 `GeneratorTrustSettings.embedding_model /
+    embedding_dimensions`：`search_documents.embedding` 与 `case_embeddings.embedding` 同为
+    `vector(1536)`，两处各配一套模型会让"同一段文本在两张表里的向量不在同一空间"成为可能。
+    """
+
+    model_config = SettingsConfigDict(env_prefix="SKILLEVAL_MEMORY_")
+
+    # 总开关。关闭后：Validator 模板检索退回关键词版、种子锚点退回进程内单一 embedding 版、
+    # Generator 不注入历史范本、Optimizer 不检索也不归档修复经验。**只影响默认依赖的构造**——
+    # 显式注入的检索服务（单测、主图装配）照常生效。离线开发机与单元测试环境应关闭。
+    enabled: bool = True
+
+    # ---- 混合检索（docs/dev/23 第 2 节） ----
+    # 两路召回各取多少条再合并。20 + 20 去重后通常 25~35 条交给 Reranker：Cross-Encoder 是
+    # 逐对打分，候选越多延迟越线性增长，几十条是"召回够宽 / 重排仍在几百毫秒内"的平衡点。
+    dense_k: int = Field(default=20, ge=1)
+    bm25_k: int = Field(default=20, ge=1)
+    # Reranker 不可用时的融合参数（Reciprocal Rank Fusion 的 k，业界常用 60）。
+    rrf_k: int = Field(default=60, ge=1)
+
+    # ---- Reranker（docs/dev/23 第 2.2 节） ----
+    reranker_enabled: bool = True
+    # 默认选**多语言**轻量 Cross-Encoder：本项目的 SKILL.md、用例与种子锚点大量是中文，
+    # 纯英文的 ms-marco-MiniLM 对中文 query-doc 对几乎是随机打分。文档 23 只锁接口不锁权重，
+    # 运维按算力换成 `BAAI/bge-reranker-v2-m3` 等更大的模型只需改这一项。
+    reranker_model: str = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
+    reranker_device: str | None = None  # None = sentence-transformers 自动选择（有 GPU 用 GPU）
+    reranker_max_length: int = Field(default=512, ge=16)  # query+doc 截断长度（token）
+
+    # ---- 分块（docs/dev/23 第 3.3.1 节） ----
+    # 单个标题章节超过它才退化为按段落二级切分。800 token 大约是"一整节参数说明"的量级，
+    # 再大的章节通常已经混杂了多条互不相干的指令。
+    chunk_max_tokens: int = Field(default=800, ge=50)
+
+    # ---- 三处 Few-shot 的检索条数 ----
+    validator_template_top_k: int = Field(default=3, ge=1)
+    # Generator 冷启动注入几份历史成功范本、每份最多带几条同类别的优质用例。
+    # 范本给多了模型会开始照抄历史 Skill 的业务内容，而不是学"用例设计模式"。
+    cold_start_example_count: int = Field(default=3, ge=0)
+    cold_start_cases_per_example: int = Field(default=4, ge=1)
+    optimizer_patch_top_k: int = Field(default=3, ge=0)
+    # 渲染进 Optimizer Prompt 的单条历史 diff 截断长度（字符）。完整 diff 可能上千行，
+    # few-shot 要传达的是"改法"，不是把别人的补丁原样塞满上下文。
+    optimizer_patch_diff_max_chars: int = Field(default=1500, ge=100)
+
+
 class LangfuseSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="SKILLEVAL_LANGFUSE_")
 
@@ -667,6 +716,7 @@ class Settings(BaseSettings):
     judge: JudgeSettings = Field(default_factory=JudgeSettings)
     optimizer: OptimizerSettings = Field(default_factory=OptimizerSettings)
     validator: ValidatorSettings = Field(default_factory=ValidatorSettings)
+    memory: MemorySettings = Field(default_factory=MemorySettings)
     langfuse: LangfuseSettings = Field(default_factory=LangfuseSettings)
     api: ApiSettings = Field(default_factory=ApiSettings)
     approval: ApprovalSettings = Field(default_factory=ApprovalSettings)

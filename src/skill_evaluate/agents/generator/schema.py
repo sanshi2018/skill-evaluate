@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from skill_evaluate.agents.generator.seed_anchors import SeedAnchor
 from skill_evaluate.state.enums import GenerationMode, TestCaseCategory
+from skill_evaluate.state.memory import ArchivedExample
 from skill_evaluate.state.skill import SkillDefinition
 
 
@@ -65,6 +66,11 @@ class GenerationRequest(BaseModel):
     # 干扰包的 description 给模型看，它只能凭空编一个并不存在的协作对象。
     # 其余类别的模板不渲染这个变量。
     background_skills: list[SkillDefinition] = Field(default_factory=list)
+    # 历史成功范本（docs/dev/23 第 3.3 节追加）：与 `seed_anchors` 并列的**第二段独立** few-shot。
+    # 种子锚点回答"用户会怎么问"，范本回答"什么样的用例设计模式被验证过有效"，两者不合并。
+    # None（默认）= `GeneratorAgent` 在冷启动场景自动检索；[] = 显式不要；非空 = 调用方直接给定。
+    # 只有 positive / negative 模板渲染它（按当前出题类别取范本里的同类用例）。
+    archived_examples: list[ArchivedExample] | None = None
 
     @model_validator(mode="after")
     def _validate_counts(self) -> GenerationRequest:
