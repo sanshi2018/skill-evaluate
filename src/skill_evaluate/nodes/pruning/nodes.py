@@ -260,7 +260,9 @@ class PruningPipeline:
         settings = self.deps.settings()
 
         known_ids = {node.capability_id for node in tree.nodes}
+        # 能力是否可排序
         tier_ranked = _tier_ranked(tree)
+        # 排序的能力权重
         ordered_pairs = _prioritized_pairs(tree)
         total_pairs = len(ordered_pairs)
         limit = max(0, settings.max_capability_pairs_for_matrix)
