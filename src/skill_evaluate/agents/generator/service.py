@@ -78,6 +78,7 @@ class TestSuiteService:
         extra_categories: list[TestCaseCategory] | None = None,
         category_counts: dict[TestCaseCategory, int] | None = None,
         extra_triggered_by: str = "dimension_extra_categories",
+        background_skills: list[SkillDefinition] | None = None,
     ) -> EnsureTestSuiteResult:
         """流水线默认入口：能复用就复用，从未生成过才首次生成。
 
@@ -97,12 +98,16 @@ class TestSuiteService:
         主要线索，而所有走 `extra_categories` 的维度共用一个
         `dimension_extra_categories`，等于把线索抹平了（模块五传
         `attacker_bootstrap`）。
+
+        `background_skills`（docs/dev/20 追加）只透传给 `GenerationRequest`，供
+        MULTI_SKILL 模板渲染协作对象；不影响复用/补生成的判定口径。
         """
         extras = list(extra_categories or [])
+        backgrounds = list(background_skills or [])
         existing = await self._suite_repo.get_active_version(skill.skill_id, skill.version_ref)
         if existing is not None:
             topped_up = await self._ensure_extra_categories(
-                skill, existing, extras, category_counts, extra_triggered_by
+                skill, existing, extras, category_counts, extra_triggered_by, backgrounds
             )
             if topped_up is not None:
                 return EnsureTestSuiteResult(suite_version=topped_up, generated=True)
@@ -136,7 +141,7 @@ class TestSuiteService:
             # docs/dev/13 才引入的探查用例，那不是"漂移"而是"这个维度从没出过题"。
             # 补生成挂在漂移的那一版上，staleness 告警照样带出去。
             topped_up = await self._ensure_extra_categories(
-                skill, stale, extras, category_counts, extra_triggered_by
+                skill, stale, extras, category_counts, extra_triggered_by, backgrounds
             )
             return EnsureTestSuiteResult(
                 suite_version=topped_up or stale,
@@ -156,6 +161,7 @@ class TestSuiteService:
                 ],
                 category_counts=dict(category_counts or {}),
                 triggered_by="auto_bootstrap",
+                background_skills=backgrounds,
             )
         )
         return EnsureTestSuiteResult(suite_version=version, generated=True)
@@ -167,6 +173,7 @@ class TestSuiteService:
         extra_categories: list[TestCaseCategory],
         category_counts: dict[TestCaseCategory, int] | None,
         triggered_by: str = "dimension_extra_categories",
+        background_skills: list[SkillDefinition] | None = None,
     ) -> TestSuiteVersion | None:
         """补齐现有用例集里**一条都没有**的额外类别，返回新版本；无需补齐时返回 None。
 
@@ -215,6 +222,7 @@ class TestSuiteService:
                 negative_count=0,
                 category_counts=counts,
                 triggered_by=triggered_by,
+                background_skills=list(background_skills or []),
             ),
             inherited_case_ids=current.case_ids,
         )

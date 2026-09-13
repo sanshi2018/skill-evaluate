@@ -107,7 +107,7 @@ def get_generation_template(category: TestCaseCategory) -> GenerationTemplate:
         raise GenerationError(
             f"category={category.value!r} 尚无对应的生成模板；已注册："
             f"{sorted(c.value for c in GENERATION_TEMPLATE_REGISTRY)}。"
-            "MULTI_SKILL 由 docs/dev/20 新增模板并调用 register_generation_template()，"
+            "新增类别请新增模板并调用 register_generation_template()，"
             "接入方式见 docs/dev/interfaces/06_generator_extension_points.md 第 3 节。"
             "ADVERSARIAL **不在本表登记**：模块五（docs/dev/15）底下有七个攻击面，"
             "各有各的构造要求，塞进一个模板只会让模型挑最好写的两类反复出题。"
@@ -145,6 +145,15 @@ register_generation_template(
     TestCaseCategory.PROGRESSIVE_DISCLOSURE_REGULAR,
     "pd_regular.jinja",
     description="渐进式披露动态探查：不该读取任何参考文件的常规任务（docs/dev/13）",
+)
+# docs/dev/20：多技能协同复合用例。放在内置注册区而不是模块十自己的包里做导入副作用：
+# 出题与"哪个维度导入了谁"解耦——CLI `generate --force` 重出整套题时不会导入 nodes/。
+# 模板需要 `GenerationRequest.background_skills`（干扰包）才有协作对象可写；调用方传空
+# 列表时模板仍能渲染，但出不来合格的题，因此模块十在干扰包为空时把条数算成 0（不出题）。
+register_generation_template(
+    TestCaseCategory.MULTI_SKILL,
+    "multi_skill.jinja",
+    description="多技能协同复合用例：目标 Skill 与干扰包中某个 Skill 协同完成（docs/dev/20）",
 )
 
 

@@ -170,6 +170,9 @@ traces_by_case = await pipeline.run_cases(run_id, skill, cases)
 
 > ✅ `19` 已照此办理：它的对照实验骨架是 `executors/comparison.py::run_arm()`，自己构造带
 > `sampling_overrides` 的请求，未改动本维度的 `run_cases()`。
+> ✅ `20` 同样照此办理：`nodes/multi_skill/nodes.py::MultiSkillPipeline._execute_all()` 自己构造带
+> `background_skills` 的请求；也没有调 `ensure_test_suite()` 之外的出题入口（它用
+> `extra_categories=[MULTI_SKILL]` 的 REUSE 语义补齐自己的专属类别，同模块三/五）。
 
 需要在请求里加 `sampling_overrides` / `background_skills` 时，请**不要**改本维度的
 `run_cases`，而是在自己的维度里按同样的形状写一份——`ExecutionRequest` 的构造是

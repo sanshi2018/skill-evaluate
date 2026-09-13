@@ -186,6 +186,8 @@ class GeneratorAgent(BaseLLMAgent):
             # 其余模板不渲染这个变量，多传无害（StrictUndefined 只在**用到**未定义
             # 变量时报错，多给几个不会）。统一传比在这里按类别分支更省心。
             reference_files=request.skill.reference_files,
+            # 多技能复合用例模板（docs/dev/20）需要干扰包里各 Skill 的描述；理由同上，统一传。
+            background_skills=request.background_skills,
         )
 
         try:

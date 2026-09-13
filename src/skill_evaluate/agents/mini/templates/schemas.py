@@ -154,19 +154,68 @@ class NegativeConstraintProbeOutput(BaseReviewOutput):
     violation_would_be_observable: bool  # 违反与否从产出里看得出来
 
 
+class SemanticFlowFrictionOutput(BaseReviewOutput):
+    """跨技能语义流转的摩擦力诊断（模块十深度一 / docs/dev/20 第 7 节）。
+
+    `verdict`：`pass` = 数据在两个 Skill 之间顺畅流转；`fail` = 出现了"语义断层"——
+    Agent 被迫花大量步骤编写临时转换代码，才能把 A 的产出喂给 B。
+
+    `conversion_step_ids` 单独列出而不是只写在 reasoning 里：审查工作台（docs/dev/22）
+    要能把这几步在 Trace 树上高亮出来，从 reasoning 文本里正则抠步骤号不可靠。
+    `suggested_intermediate_format` 对应架构文档"建议在 SKILL.md 中补充标准化的中间态
+    数据模板"——判 fail 时它就是给作者的具体修改建议。
+    """
+
+    conversion_step_ids: list[int] = Field(default_factory=list)  # 纯粹为了格式转换而存在的步骤
+    suggested_intermediate_format: str | None = None  # 建议补进 SKILL.md 的中间态数据约定
+
+
+class RolePersonaConflictOutput(BaseReviewOutput):
+    """并发 Skill 之间的角色设定冲突静态审查（模块十深度二 / docs/dev/20 第 9 节）。
+
+    `verdict`：`pass` = 被测 Skill 与干扰包的角色/风格设定可以共存；`fail` = 叠加后会让
+    Agent 同时背负互相矛盾的心智模型（"严谨拒绝猜测的 DBA" vs "发散思维导师"）。
+
+    `downgrade_suggestions` 对应架构文档"风格强制降级"：把被测 Skill 里带强烈主观
+    预设的句子改写成客观过程指导的建议。只针对**被测 Skill** 给建议——干扰包不归
+    本次评测的作者改。
+    """
+
+    target_persona_lines: list[str] = Field(default_factory=list)  # 被测 Skill 里的角色/风格预设原文
+    conflicting_skill_ids: list[str] = Field(default_factory=list)  # 与之冲突的干扰包 Skill
+    downgrade_suggestions: list[str] = Field(default_factory=list)  # 改写成过程指导的建议
+
+
+class NegativeConstraintAdherenceOutput(BaseReviewOutput):
+    """一次真实执行是否遵守了某条负向约束（模块十注意力衰减 / docs/dev/20 第 8 节）。
+
+    与模块八的 `NegativeConstraintProbeOutput` 判的不是同一件事：那个判"这条**题**有没有
+    诱导踩坑"，这个判"这次**执行**有没有真的踩坑"。docs/dev/20 正文原想复用模块八的方法
+    做后者，但那个方法看不到 Trace，回答不了"守没守"，因此单列一个模板。
+
+    `verdict`：`pass` = 遵守了（或本次执行根本没走到会踩坑的地方）；`fail` = 违反了。
+    """
+
+    violation_step_ids: list[int] = Field(default_factory=list)  # 违反约束的具体步骤
+    constraint_was_exercised: bool  # 执行是否真的走到了需要守这条约束的地方
+
+
 __all__ = [
     "BaseReviewOutput",
     "ConstructiveErrorOutput",
     "ControlCalibrationOutput",
     "HelpDocQualityOutput",
     "LinguisticSmellOutput",
+    "NegativeConstraintAdherenceOutput",
     "NegativeConstraintProbeOutput",
     "OmissionAuditOutput",
     "ProgressiveDisclosureStaticOutput",
     "PromptInjectionDefenseOutput",
     "RoiComparisonOutput",
+    "RolePersonaConflictOutput",
     "ScopingCheckOutput",
     "SecuritySeverityRatingOutput",
+    "SemanticFlowFrictionOutput",
     "TraceEfficiencyOutput",
     "Verdict",
 ]

@@ -99,14 +99,15 @@ version = await TestSuiteService().incremental_patch(
 | `combinatorial_gap` | **模块七组合矩阵盲区**（docs/dev/17，首个真实生产者）、模块十组合矩阵盲区 |
 | `negative_constraint_gap` | **模块八负向约束盲区**（docs/dev/18，首个也是唯一的生产者）——某条 Gotchas 禁令没有任何反事实用例去诱导 |
 | `cross_model_sampling` | 模块九验证集不足时定向生成（**docs/dev/19 实现时决定不启用**：非阻断维度不改变用例集，空抽样如实报告；取值保留） |
+| `multi_skill_bootstrap` | 模块十补齐 MULTI_SKILL 复合用例（docs/dev/20，经 `ensure_test_suite(extra_triggered_by=...)`） |
 
 ## 3. 新增用例类别（`20` MULTI_SKILL）
 
 > ⚠️ **`13` 落地后此节已改**：原先的硬编码字典 `_TEMPLATE_BY_CATEGORY` 已被
 > **注册表**取代，新增类别不再需要改 `agent.py`。
 
-已注册四个类别：`positive` / `negative`（`06`）、`progressive_disclosure_trigger` /
-`progressive_disclosure_regular`（`13`）。传入未注册的 category 仍然抛
+已注册五个类别：`positive` / `negative`（`06`）、`progressive_disclosure_trigger` /
+`progressive_disclosure_regular`（`13`）、`multi_skill`（`20`）。传入未注册的 category 仍然抛
 `GenerationError`，错误信息里直接点名了应由哪份文档补齐（不是静默跳过）。
 
 > ⚠️ **`15` 落地后此节又改了一处：`ADVERSARIAL` 不走这张表**。模块五底下有**七个
@@ -119,6 +120,14 @@ version = await TestSuiteService().incremental_patch(
 >
 > 换句话说：**类别底下还要再分手法时，加第二层注册表，不要把手法塞进一个模板**。
 > `20` 的 MULTI_SKILL 若也演化成多种组合手法，照 `attacker/playbook.py` 抄。
+
+> ✅ **`20` 已落地**：`multi_skill.jinja` 在 `registry.py` 内置注册区注册（而不是模块十的导入
+> 副作用——CLI `generate --force` 重出整套题时不会导入 `nodes/`）。它需要知道"和谁协作"，为此
+> **追加了一个字段**：`GenerationRequest.background_skills: list[SkillDefinition]`（默认空，
+> 其余类别不渲染），`ensure_test_suite(..., background_skills=...)` 透传到首次生成与补生成两条
+> 路径，`GeneratorAgent._generate_category()` 以模板变量 `background_skills` 传入。调用方式见
+> `nodes/multi_skill/nodes.py::MultiSkillPipeline.prepare_multi_skill_context`（干扰包为空时
+> 条数算成 0，不出题）。
 
 接入方式（以 `20` 的 MULTI_SKILL 为例）：
 

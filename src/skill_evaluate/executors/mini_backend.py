@@ -89,6 +89,15 @@ class MiniAgentBackend(ExecutorBackend):
                 spec_count=len(request.assertion_specs),
                 hint="断言脚本执行要求真实沙箱，请把该维度路由到 PLUGGABLE 后端",
             )
+        if request.background_skills:
+            # docs/dev/20：Mini 后端只把目标 SKILL.md 当 prompt，没有"多个 Skill 同时挂载、
+            # Agent 自己决定加载谁"这回事。忽略并告警，理由同上。
+            logger.warning(
+                "mini_backend_background_skills_ignored",
+                case_id=request.case.case_id,
+                background_skill_ids=[s.skill_id for s in request.background_skills],
+                hint="多技能并发要求真实沙箱，请把该维度路由到 PLUGGABLE 后端",
+            )
         prompt = self._build_prompt(request)
         temperature = 0.1
         if request.sampling_overrides:

@@ -23,7 +23,7 @@ from skill_evaluate.nodes.cross_model import (
 # A. 装进主图（docs/dev/24）：只加维度内部的边（含三条支路的扇出与汇合）
 pipeline = add_cross_model_nodes(builder)
 builder.add_edge("trigger_accuracy.finalize_dimension_report", ENTRY_NODE)   # 需要模块一先产出用例集
-builder.add_edge(TERMINAL_NODE, "multi_skill.entry")
+builder.add_edge(TERMINAL_NODE, "finalize.report")   # 模块十入口见 interfaces/20（排在模块八之后）
 
 # B. 单独跑一遍
 graph = build_cross_model_subgraph().compile(checkpointer=...)
@@ -229,6 +229,10 @@ evidence.behaved_as_expected                                 # True / False / No
 同一节点里并发跑两条臂时**共用一个信号量**。`20` 的 `background_skills` 请求属于它自己的语义，
 按 `interfaces/11` 第 4.2 节约定自己构造，别往 `run_arm` 上加参数。
 
+> ✅ `20` 已照此办理（`MultiSkillPipeline._execute_all()`），复用了 `is_conclusive_trace()` 的证据口径；
+> 没有复用 `summarize_arm()`——多技能并发下"加载了没有"要先经 `executors/skill_attribution.py` 归因，
+> 不能直接读 `loaded_skill_md`。
+
 ### 5.2 AI 话术词典（`agents/analyzer/ablation_lexicon.py`）
 
 `scan_lexicon(text)` / `ablate(text, seed, drop_probability=...)` / `introduced_hits(before, after)` /
@@ -259,7 +263,7 @@ evidence.behaved_as_expected                                 # True / False / No
 | `RUN_INDEX_XMODEL_GATE_BASELINE` | 210 | 共识门控：补丁前基线（备用代理） |
 | `RUN_INDEX_XMODEL_GATE_CANDIDATE` | 220 | 共识门控：候选补丁（备用代理，每轮复用） |
 
-后续维度从 230 起申领。
+后续维度从 230 起申领（`20` 已申领 230~237，再往后从 240 起）。
 
 ---
 

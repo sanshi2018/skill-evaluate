@@ -68,14 +68,14 @@ def build_main_graph() -> CompiledGraph:
     builder.add_edge("capability_coverage.blind_spot_detection", "coverage.pruning")
     builder.add_edge("coverage.pruning", "coverage.weighting")
 
-    builder.add_node("multi_skill.entry", multi_skill_conflict_entry)       # 20
-    builder.add_edge("coverage.weighting", "multi_skill.entry")
-    builder.add_edge("trigger_accuracy.prepare_test_suite", "multi_skill.entry")
+    multi_skill = add_multi_skill_nodes(builder)                            # 20（平铺八个节点，见 interfaces/20）
+    builder.add_edge("coverage.weighting", MULTI_SKILL_ENTRY)               # 排在模块八之后：读负向约束映射
+    builder.add_edge("trigger_accuracy.prepare_test_suite", MULTI_SKILL_ENTRY)
 
     builder.add_node("finalize.report", finalize_benchmark_report)
     for terminal_node in ["instruction_control.finalize_dimension_report", "context_scoping.finalize_dimension_report",
                             "script_usability.finalize_dimension_report", "security.finalize_dimension_report",
-                            "cross_model.finalize_dimension_report", "multi_skill.entry"]:
+                            "cross_model.finalize_dimension_report", MULTI_SKILL_TERMINAL]:
         builder.add_edge(terminal_node, "finalize.report")
 
     builder.add_node("finalize.patch_pr", patch_to_pr_conversion)

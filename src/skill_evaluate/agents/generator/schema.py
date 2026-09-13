@@ -52,6 +52,11 @@ class GenerationRequest(BaseModel):
     # 模块三的"渐进式披露触发探查"要求**每个参考文件各出一条**，条数只有调用方
     # 算得出来。未在此声明的类别回落到 `count_for()` 的默认值。
     category_counts: dict[TestCaseCategory, int] = Field(default_factory=dict)
+    # 与被测 Skill 协同出题所需的"其他 Skill"（docs/dev/20 追加，默认空 = 原行为）。
+    # MULTI_SKILL 复合用例要求"必须由目标 Skill 与干扰包中某个 Skill 协同完成"，不把
+    # 干扰包的 description 给模型看，它只能凭空编一个并不存在的协作对象。
+    # 其余类别的模板不渲染这个变量。
+    background_skills: list[SkillDefinition] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _validate_counts(self) -> GenerationRequest:

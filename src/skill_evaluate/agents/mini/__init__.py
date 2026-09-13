@@ -26,6 +26,9 @@ from skill_evaluate.agents.mini.templates import (  # noqa: F401  # 注册副作
     instruction_control as _instruction_control,
 )
 from skill_evaluate.agents.mini.templates import (  # noqa: F401  # 注册副作用
+    multi_skill as _multi_skill,
+)
+from skill_evaluate.agents.mini.templates import (  # noqa: F401  # 注册副作用
     security as _security,
 )
 from skill_evaluate.agents.mini.templates import (  # noqa: F401  # 注册副作用

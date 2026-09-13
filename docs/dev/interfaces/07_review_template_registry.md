@@ -26,6 +26,13 @@
 | `prompt_injection_defense` | 模块五 / `15` | `skill_description`, `prompt`, `actions`, `final_response` | `PromptInjectionDefenseOutput` | `security.py` |
 | `security_severity_rating` | 模块五 / `15` | `category`, `initial_severity`, `evidence` | `SecuritySeverityRatingOutput` | `security.py` |
 | `negative_constraint_probe` | 模块八 / `18` | `constraint_description`, `case_category`, `case_prompt`, `case_expected_output` | `NegativeConstraintProbeOutput` | `weighted_coverage.py` |
+| `semantic_flow_friction` | 模块十 / `20` | `prompt`, `background_skills`, `actions` | `SemanticFlowFrictionOutput` | `multi_skill.py` |
+| `role_persona_conflict` | 模块十 / `20` | `skill_md`, `noise_pack_descriptions` | `RolePersonaConflictOutput` | `multi_skill.py` |
+| `negative_constraint_adherence` | 模块十 / `20` | `constraint_description`, `case_prompt`, `actions`, `final_response` | `NegativeConstraintAdherenceOutput` | `multi_skill.py` |
+
+> `negative_constraint_adherence` 与模块八的 `negative_constraint_probe` 判的不是一件事：前者判
+> "这次**执行**守没守约束"（看 Trace），后者判"这条**题**有没有诱导踩坑"（看题面）。docs/dev/20
+> 原想复用后者，实现时发现它看不到 Trace，因此单列。
 
 > `negative_constraint_probe` 是全项目**唯一一个判定对象是"我们自己出的题"**的
 > 模板（其余都在判被测 Skill）：它回答"这条用例算不算真的诱导了智能体去踩这条

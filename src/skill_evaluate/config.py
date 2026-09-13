@@ -405,6 +405,58 @@ class CrossModelSettings(BaseSettings):
     consensus_tolerance: float = Field(default=0.05, ge=0.0, le=1.0)
 
 
+class MultiSkillSettings(BaseSettings):
+    """模块十（docs/dev/20）：多技能并发加载与上下文冲突防范评测。
+
+    `noise_pack_skill_ids` / `core_skill_ids` 由**运维侧维护**（与断言工具箱仓库、黄金用例
+    同一类"本系统只消费不生产"的数据）：它们指向技能库里已经入库（`SkillRepository`）的
+    其他 Skill，本维度按 skill_id 取**最新入库版本**。
+
+    其余字段全部是"成本 vs 证据强度"的旋钮：架构文档对模块十的权衡分析第一句就是
+    组合爆炸，因此每一个真实起沙箱的探测都有独立的条数上限，而不是跑全量用例。
+
+    与模块九一样，没有暴露成配置的是阻断策略（只有基石回归熔断阻断，见
+    `nodes/multi_skill/nodes.py::BLOCKING_PROBES`）：改它应当留下代码评审记录。
+    """
+
+    model_config = SettingsConfigDict(env_prefix="SKILLEVAL_MULTISKILL_")
+
+    # 基准干扰包：3~5 个代表各类冲突类型的固定技能 ID（功能相似易混淆 / 角色设定冲突 /
+    # 输出格式冲突）。**固定**是控制组合爆炸的关键——每次只与这一个包对抗，复杂度 O(1)。
+    # 为空时全部动态探测跳过，维度记 NEEDS_HUMAN_REVIEW（不是 PASS：那等于把维度关掉）。
+    noise_pack_skill_ids: list[str] = Field(default_factory=list)
+    # Top 5 调用频率最高的基石技能 ID（增量回归熔断的守护对象）。
+    core_skill_ids: list[str] = Field(default_factory=list)
+    # 上下文挤兑探测的目标 Token 水位。本系统无法凭空把上下文"撑到"某个值（那需要往
+    # 沙箱里塞与任务无关的填充物，会引入新的变量）；这里用它做**证据强度标注**：
+    # 并发执行的真实 Token 水位远低于该值时，报告写明"未逼近挤兑阈值，未发现衰减的
+    # 结论强度有限"。
+    context_flood_target_tokens: int = 80000
+    # 水位达到目标值的多大比例才算"逼近阈值"。
+    context_flood_near_ratio: float = Field(default=0.5, ge=0.0, le=1.0)
+
+    # 触发劫持探测最多取几条 POSITIVE 用例（每条跑"单测 + 并发"两次）。
+    max_hijack_probe_cases: int = Field(default=5, ge=0)
+    # 本维度要求 Generator 为 MULTI_SKILL 类别出几条复合用例（仅在该类别一条都没有时生成）。
+    multi_skill_case_count: int = Field(default=6, ge=0)
+    # 指令拮抗探测最多跑几条 MULTI_SKILL 用例（每条一次并发执行 + 一次语义断层裁决）。
+    max_antagonism_probe_cases: int = Field(default=6, ge=0)
+    # 时序扰动探测最多跑几条（只从"原始顺序下执行健康"的 MULTI_SKILL 用例里取）。
+    max_temporal_probe_cases: int = Field(default=3, ge=0)
+    # 死锁判定：错误动作序列里出现几次"A→B→A"式的往返才算高频交替报错。
+    deadlock_min_ping_pong: int = Field(default=3, ge=1)
+
+    # 基石回归：每个核心 Skill 抽几条 POSITIVE 用例（每条跑"独立 + 以本 Skill 为背景"两次）。
+    core_regression_sample_size: int = Field(default=5, ge=0)
+    # 核心 Skill 在引入本 Skill 后触发率的安全下限（架构文档"跌破安全阈值"）。
+    core_regression_min_rate: float = Field(default=0.8, ge=0.0, le=1.0)
+
+    # 软性冲突发现累计到多少条触发深度冲突告警（基石熔断无论条数都告警）。
+    deep_conflict_alert_threshold: int = Field(default=3, ge=1)
+    # 单次并发执行的墙钟超时：多技能并发的 Prompt 更长、步骤更多，与模块九同为 90s。
+    execution_timeout_s: int = 90
+
+
 class JudgeSettings(BaseSettings):
     """Judge Agent 的可信度机制参数（docs/dev/08）。
 
@@ -505,6 +557,7 @@ class Settings(BaseSettings):
     security: SecuritySettings = Field(default_factory=SecuritySettings)
     coverage: CoverageSettings = Field(default_factory=CoverageSettings)
     cross_model: CrossModelSettings = Field(default_factory=CrossModelSettings)
+    multi_skill: MultiSkillSettings = Field(default_factory=MultiSkillSettings)
     judge: JudgeSettings = Field(default_factory=JudgeSettings)
     optimizer: OptimizerSettings = Field(default_factory=OptimizerSettings)
     validator: ValidatorSettings = Field(default_factory=ValidatorSettings)

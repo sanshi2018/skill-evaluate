@@ -60,6 +60,23 @@ RUN_INDEX_XMODEL_ABLATION_ABLATED = 200  # 消融测试：剥离"咒语"后的 S
 # "当前这一版补丁"的表现。
 RUN_INDEX_XMODEL_GATE_BASELINE = 210
 RUN_INDEX_XMODEL_GATE_CANDIDATE = 220
+# 模块十（docs/dev/20）：多技能并发加载。每条执行分支只跑一次（成本由各探测的条数
+# 上限控制，而不是冗余次数），因此一个分支一个号，与模块三/五同形。
+#
+# "单测"与"并发"两条分支必须各占一个号：同一条用例在同一次运行里既要跑"无背景技能"
+# 的基线、又要跑"挂载干扰包"的并发版本，同号的话两条 Trace 会互相覆盖，对照就退化成
+# 拿同一条 Trace 和自己比。
+RUN_INDEX_MULTI_SKILL_HIJACK_SOLO = 230  # 触发劫持：目标 Skill 单独加载（基线）
+RUN_INDEX_MULTI_SKILL_HIJACK_CROWDED = 231  # 触发劫持：挂载基准干扰包
+RUN_INDEX_MULTI_SKILL_ANTAGONISM = 232  # 指令拮抗 / 语义断层：MULTI_SKILL 复合用例并发执行
+RUN_INDEX_MULTI_SKILL_ATTENTION_SOLO = 233  # 注意力衰减：Gotchas 探针用例单测
+RUN_INDEX_MULTI_SKILL_ATTENTION_CROWDED = 234  # 注意力衰减：同一条用例并发执行
+RUN_INDEX_MULTI_SKILL_TEMPORAL = 235  # 时序扰动：打乱步骤顺序后的并发执行
+# 基石回归：跑的是**核心 Skill 自己的**用例（case_id 属于核心 Skill），与核心 Skill 自身
+# 评测的 0~2 号冗余执行不冲突；基线与并发仍需各占一个号。
+RUN_INDEX_MULTI_SKILL_CORE_BASELINE = 236  # 核心 Skill 独立执行
+RUN_INDEX_MULTI_SKILL_CORE_CROWDED = 237  # 核心 Skill 以被测 Skill 为背景执行
+# 后续维度从 240 起申领。
 # 模块四（docs/dev/14）**不占号段**：它裸调脚本子进程（`executors/script_sandbox.py`
 # 的 `ScriptSandboxRunner`），一条 `ExecutionTrace` 都不落，与本表无关。登记在这里
 # 是为了让下一个来申领号段的人不必再翻一遍模块四的代码确认这件事。

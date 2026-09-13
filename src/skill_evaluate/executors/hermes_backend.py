@@ -253,6 +253,13 @@ class HermesSandboxClient(Protocol):
     ) -> HermesSandboxHandle:
         """创建沙箱并下发任务。
 
+        docs/dev/20 追加的挂载契约：`request.background_skills` 非空时，把目标 Skill 与
+        每个背景 Skill 分别挂载到**以 skill_id 命名的独立目录**（如 `skills/<skill_id>/SKILL.md`），
+        一并注入 Agent 可见的技能列表；并在 Hook payload 里显式上报 `skill_md_loaded`
+        （指**目标** Skill）。多个 SKILL.md 共存时 `map_hermes_payload_to_trace()` 的路径
+        兜底会被背景技能误导，模块十靠目录名做加载归因
+        （`executors/skill_attribution.py`，docs/dev/interfaces/03_hermes_sandbox_client.md）。
+
         docs/dev/10 第 4.2 节对实现方追加了一条契约：`request.assertion_specs`
         非空时，实现必须要求 Hermes 在**任务主流程结束、容器销毁之前**，把每个
         spec 的 `script_content` 写到 `script_path` 并执行，按顺序收集

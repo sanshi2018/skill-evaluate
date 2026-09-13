@@ -70,6 +70,11 @@ verdict = judge.quantitative_verdict(
 > 规则"无法追溯，而那正是 `register_rule()` 遇重名直接报错的理由。口径差异改用
 > `inputs` 里的标记字段表达。
 
+> ✅ **`20` 已落地七条规则**（`nodes/multi_skill/rules.py`）：`multi_skill_namespace_collision` /
+> `multi_skill_trigger_hijack` / `multi_skill_background_overtrigger` / `multi_skill_instruction_deadlock` /
+> `multi_skill_attention_decay` / `multi_skill_temporal_fragility` / `multi_skill_core_regression`。
+> 三个裁量模板全部 `ROUTINE`；唯一阻断合并的基石熔断是纯量化规则，不经 LLM。
+
 几条容易踩的约定：
 
 - **`quantitative_verdict()` 是同步的，且不落库。** 纯算术没有 IO；量化判定通常

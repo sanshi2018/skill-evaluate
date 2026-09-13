@@ -389,6 +389,7 @@ class GenerationTemplateRegistryTests:
             TestCaseCategory.NEGATIVE,
             TestCaseCategory.PROGRESSIVE_DISCLOSURE_TRIGGER,
             TestCaseCategory.PROGRESSIVE_DISCLOSURE_REGULAR,
+            TestCaseCategory.MULTI_SKILL,  # docs/dev/20 追加
         }
 
     def test_unregistered_category_names_the_owning_document(self) -> None:
@@ -585,6 +586,29 @@ class ExtraCategoriesTests:
         assert {c.category for c in case_repo.saved} == {
             TestCaseCategory.PROGRESSIVE_DISCLOSURE_TRIGGER
         }
+
+    @pytest.mark.asyncio
+    async def test_multi_skill_top_up_renders_background_skills(self) -> None:
+        """docs/dev/20：MULTI_SKILL 模板要看到干扰包的描述，否则只能凭空编协作对象。"""
+        case_repo = self._CaseRepo([])
+        llm = CountingLLMClient(cases_per_call=1)
+        service, _ = self._service_with(llm, case_repo)
+        report_writer = _skill("v9").model_copy(
+            update={"skill_id": "report-writer", "description": "把表格数据写成 Markdown 周报"}
+        )
+
+        result = await service.ensure_test_suite(
+            _skill("v1"),
+            extra_categories=[TestCaseCategory.MULTI_SKILL],
+            category_counts={TestCaseCategory.MULTI_SKILL: 1},
+            extra_triggered_by="multi_skill_bootstrap",
+            background_skills=[report_writer],
+        )
+        assert result.generated is True
+        assert llm.call_count == 1
+        assert "report-writer" in llm.prompts[0]
+        assert "把表格数据写成 Markdown 周报" in llm.prompts[0]
+        assert {c.category for c in case_repo.saved} == {TestCaseCategory.MULTI_SKILL}
 
     @pytest.mark.asyncio
     async def test_zero_requested_count_skips_the_llm_entirely(self) -> None:

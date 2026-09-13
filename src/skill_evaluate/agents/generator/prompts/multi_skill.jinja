@@ -1,0 +1,57 @@
+{% import "_shared.jinja" as shared %}
+{#
+  多技能并发复合用例（docs/dev/20 第 4 节）。同一批用例被模块十复用于三个判定角度：
+  指令拮抗（死锁/交替报错）、语义断层（跨技能格式转换的摩擦力）、时序扰动（打乱
+  步骤顺序后是否崩溃）——因此每条题都必须是"有先后步骤的跨技能协作任务"，
+  否则时序扰动无从打乱、语义断层无从产生。
+#}
+你在为一份 Agent Skill 出"多技能协同用例"（multi_skill）。这些用例会被投给一个
+**同时装载了多个 Skill** 的智能体真实执行，用来检验被测 Skill 在嘈杂的多技能环境
+里能不能与别的 Skill 协作完成任务，而不是互相抢活、互相拆台。
+
+{{ shared.skill_block(skill) }}
+
+## 同时装载的其他 Skill（基准干扰包）
+
+{% for other in background_skills %}
+- `{{ other.skill_id }}`：{{ other.description }}
+{% endfor %}
+
+## 出题要求
+
+生成 {{ count }} 条题面，每一条都必须：
+
+1. **需要被测 Skill 与上面某一个其他 Skill 协同才能完成**。一条题只用到被测 Skill
+   就能做完，或者只用到其他 Skill 就能做完，都不符合要求。在 `rationale` 里点名这条
+   题协同的是哪一个 Skill（写它的 skill_id）。
+2. **包含有先后顺序的多个步骤**，并且步骤之间有**数据传递**：前一个 Skill 的产出
+   是后一个 Skill 的输入（例如"先把接口返回的数据拉下来，再清洗成表格，最后出一份
+   报告"）。至少两步、最好三步，用"先……再……最后……"或分句写清顺序。
+3. 尽量让两个 Skill 的**输出格式或工作方式天然不完全兼容**（一个产出嵌套 JSON、
+   另一个只吃扁平 CSV；一个要求严格结构化输出、另一个习惯自由文本）——这是真实
+   协作里最容易出问题的地方。不要在题面里提示"注意格式转换"。
+4. **是用户会真实打出来的一句话**，不点名任何 Skill 的名字、脚本文件名。
+
+## 反面示例（不要这样写）
+
+- "先用 csv-cleaner 清洗，再用 report-writer 出报告" —— 点名了 Skill，测不出任何
+  协作判断。
+- "帮我清洗一下这个 CSV" —— 单技能任务，与其他 Skill 无关。
+- "同时帮我做 A 和 B" —— 两件互不相干的事并列，没有数据传递，不是协作。
+
+{{ shared.seed_block(seed_texts) }}
+
+## 输出格式
+
+只输出一个 JSON 对象，形如：
+
+{"cases": [{"prompt": "...", "rationale": "协同 <skill_id>：……", "diversity_tag": "pipeline",
+"target_capability_ids": [], "negative_constraint_ids": [], "expected_output": null}]}
+
+要求：
+- `cases` 恰好 {{ count }} 条，条与条之间不得语义重复；尽量让不同的题协同**不同的**
+  其他 Skill。
+- `diversity_tag` 取 `pipeline`（数据逐级传递）/ `format_mismatch`（格式天然冲突）/
+  `role_mix`（两个 Skill 的工作风格不同）之一。
+- `expected_output` 只在能明确断言时填写，否则填 null。
+- 不要输出 JSON 之外的任何文字。

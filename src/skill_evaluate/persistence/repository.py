@@ -94,19 +94,43 @@ class SkillRepository:
                     )
                 )
             ).scalar_one_or_none()
-            if row is None:
-                return None
-            return SkillDefinition(
-                skill_id=row.skill_id,
-                version_ref=row.version_ref,
-                root_path=row.root_path,
-                description=row.description,
-                body_markdown=row.body_markdown,
-                line_count=row.line_count,
-                token_count=row.token_count,
-                reference_files=row.reference_files or [],
-                scripts=row.scripts or [],
-            )
+            return _orm_to_skill(row) if row is not None else None
+
+    async def get_latest(self, skill_id: str) -> SkillDefinition | None:
+        """取某个 Skill **最近一次入库**的版本（docs/dev/20 第 4 节）。
+
+        模块十首次以"技能库"而不是"单一被测技能"的方式使用本仓储：基准干扰包与基石
+        Skill 由运维侧按 skill_id 维护，不绑定 version_ref——它们代表的是"系统里此刻
+        真实在用的那一版"，而那一版就是最近入库的。
+
+        以 `created_at` 排序而不是 version_ref：version_ref 是 git sha / tag，没有可比较
+        的先后语义。注意 `save()` 的 upsert 不改写 `created_at`，同一版本重复入库不会
+        让它"变新"——这正是想要的语义。
+        """
+        async with new_session() as session:
+            row = (
+                await session.execute(
+                    select(SkillORM)
+                    .where(SkillORM.skill_id == skill_id)
+                    .order_by(desc(SkillORM.created_at))
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            return _orm_to_skill(row) if row is not None else None
+
+
+def _orm_to_skill(row: SkillORM) -> SkillDefinition:
+    return SkillDefinition(
+        skill_id=row.skill_id,
+        version_ref=row.version_ref,
+        root_path=row.root_path,
+        description=row.description,
+        body_markdown=row.body_markdown,
+        line_count=row.line_count,
+        token_count=row.token_count,
+        reference_files=row.reference_files or [],
+        scripts=row.scripts or [],
+    )
 
 
 class TestCaseRepository:

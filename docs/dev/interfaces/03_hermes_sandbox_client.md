@@ -31,7 +31,7 @@ class HermesSandboxClient(Protocol):
 1. 新建 `src/skill_evaluate/executors/hermes_sandbox_client.py`，实现
    `HermesSandboxClient` 协议：
    - `create_sandbox()`：POST 到 Hermes 的沙箱创建 API，挂载 `request.skill`
-     （及 `request.background_skills`），注入 `request.case.prompt` 作为初始任务，
+     （及 `request.background_skills`，挂载方式见下文「追加契约：多技能挂载」），注入 `request.case.prompt` 作为初始任务，
      传入 `callback_url`/`hook_secret`（Hermes 侧据此在执行结束后回调
      `POST {callback_url}`，body 为 `HermesHookPayload` 结构，签名走
      `X-Hermes-Signature` header，见 `docs/dev/03` 第 4.4 节、`api/security.py`）。
@@ -78,6 +78,21 @@ class HermesSandboxClient(Protocol):
 
 备用代理 `llama_control` 的运行时遵守同样两条（`docs/dev/interfaces/19_cross_model_generalization.md`
 第 3.2 节）。
+
+## 追加契约：多技能挂载（docs/dev/20）
+
+模块十对 `create_sandbox()` 的实现方追加三条要求（`request.background_skills` 为空时形状不变）：
+
+- **目标与每个背景 Skill 分别挂载到以 `skill_id` 命名的独立目录**（例如
+  `/workspace/skills/<skill_id>/SKILL.md`，`scripts/`、`references/` 挂在同一目录下），全部注入
+  Agent 可见的技能列表——不是只挂目标。
+- **显式上报 `skill_md_loaded`，语义是"目标 Skill 是否被加载"**。沙箱里有多份 SKILL.md 时，
+  `map_hermes_payload_to_trace()` 的路径兜底（路径含 `SKILL.md` 即视为加载）会被背景技能的读取误导。
+- **轨迹里保留读取动作的真实路径**。模块十靠 SKILL.md 的直接父目录名把读取归到具体 Skill
+  （`executors/skill_attribution.py`），据此判定触发劫持与"干扰技能被意外激活"。
+
+不满足目录约定时不会得出错误结论，但劫持/熔断判定会大量落入"证据不足"。详见
+`docs/dev/interfaces/20_multi_skill_conflict.md` 第 5 节。
 
 ## 不要做的事
 
